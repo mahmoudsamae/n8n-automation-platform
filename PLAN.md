@@ -9,6 +9,7 @@ Pipeline: Stripe -> Intake -> `stripe_events` -> Processor -> Mailpit + Telegram
 | M3 | Stripe Processor workflow (below) | TODO |
 | M4 | Failure visibility: error workflow, alert when an event ends `failed`, safe way to replay a failed event | TODO |
 | M5 | Hardening: secret rotation procedure, Postgres backup, live-mode checklist, runbook | TODO |
+| M6 | Portfolio packaging: README with architecture diagram, failure scenarios with proof, 2-minute demo script | TODO |
 
 ## M3: Stripe Processor
 
@@ -21,7 +22,10 @@ For each stored `pending` event it sends one Mailpit email and one Telegram mess
    `FOR UPDATE SKIP LOCKED` and sets `status='processing'`, `attempts=attempts+1`. Two overlapping runs never process the same event.
 3. **Only eligible rows:** `ignored` and `done` rows are never selected. `failed` rows are retried only while `attempts < 5`.
 4. **Idempotent side effects:** after any retry or replay, each event has exactly one email and one Telegram message.
-   The mechanism must be written down in the workflow's sticky note. Any new column or table needs the user's approval first.
+   Uses table `side_effects(event_id, kind, done_at)` with `PRIMARY KEY (event_id, kind)`, kind is `email` or `telegram`
+   (SQL in `migrations/002_side_effects.sql`, run by the user, not by Claude). Per kind: skip if a row exists, otherwise send,
+   then `INSERT ... ON CONFLICT DO NOTHING`. If the run dies between send and insert, a retry can send that one message twice
+   (at-least-once). Document this limit in the workflow's sticky note. The workflow must not start before the user confirms the migration ran.
 5. **Email:** sent via the Mailpit SMTP credential. Subject and body contain `event_id` and the amount/currency from `payload`.
    Payload fields are read defensively (missing fields do not crash the run).
 6. **Telegram:** one message per event via a Telegram credential. 429 and 5xx responses are retried with exponential backoff
@@ -40,3 +44,18 @@ For each stored `pending` event it sends one Mailpit email and one Telegram mess
 - Stop mailpit, trigger an event: row goes `failed` with `last_error` set; start mailpit and re-queue it: it ends `done` with exactly 1 email.
 - Two Processor runs started together on 3 pending rows: 3 emails, not 6.
 - The 6 `ignored` events from the stripe trigger are untouched.
+
+## M6: Portfolio packaging
+
+Starts after M3 (M4 and M5 can finish first). Only claims backed by evidence from real runs go in.
+
+### Acceptance criteria
+1. **README.md:** one-paragraph pitch, architecture diagram (Stripe -> Intake -> `stripe_events` -> Processor -> Mailpit + Telegram,
+   with the 200/400/500 branches), setup steps that work from a clean clone, and the tech list.
+2. **Failure scenarios table:** one row per scenario with expected behavior and a link or pasted command output as proof. Minimum:
+   fake signature (400), stale timestamp (400), duplicate event (200 duplicate, 1 row), database down (500, then resend stores 1 row),
+   Mailpit down (event `failed`, later `done` with 1 email), Telegram 429/5xx (backoff then success), two Processor runs at once (no double send),
+   `ignored` events untouched.
+3. **DEMO.md:** a 2-minute video script with timestamps, the exact commands to type, and what should be on screen at each step.
+4. **No secrets:** screenshots, logs and commands are redacted (no `whsec_`, bot tokens, passwords).
+5. **Fresh-clone check:** the README setup is followed once on a clean folder and the result is noted in the README.

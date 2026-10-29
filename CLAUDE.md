@@ -25,6 +25,9 @@ Intake only verifies, classifies and stores (fast). All slow work belongs to the
 Status CHECK: `pending | processing | done | failed | ignored`.
 Partial index on `(status, received_at)` where status is pending or failed.
 
+Planned: `side_effects(event_id, kind, done_at)`, PK `(event_id, kind)`, in `migrations/002_side_effects.sql`.
+The user reviews and runs migrations themselves; Claude never runs them. Check the table exists before relying on it.
+
 ## Decided status rules
 - Intake sets `pending` if type is `checkout.session.completed` AND `payment_status = 'paid'`,
   or type is `checkout.session.async_payment_succeeded`. Everything else is `ignored`.
