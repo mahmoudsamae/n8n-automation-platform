@@ -8,7 +8,7 @@ Pipeline: Stripe -> Intake -> `stripe_events` -> Processor -> Mailpit + Telegram
 | M2 | Stripe Intake workflow: signature check, classify, idempotent insert, 200/400/500 contract. Proven with stripe CLI, including DB-down 500 | DONE |
 | M3 | Stripe Processor workflow (below) | DONE. `scripts/e2e.ps1` guards it. Known gap: real Telegram 429/5xx never provoked, backoff is unproven (needed for M6 failure table) |
 | M4 | Failure visibility (below): error workflow, alert when an event ends `failed`, safe way to replay a failed event | DONE. Proofs run (see the M4 section); `scripts/e2e.ps1` 35/35. Known gaps (carry into the M6 failure table): see "Known gaps" in the M4 section |
-| M5 | Hardening: secret rotation procedure, Postgres backup, live-mode checklist, runbook, external dead man's switch (Monitor pings an outside heartbeat service; silence triggers the alert, covering n8n/WSL down) | TODO |
+| M5 | Hardening: secret rotation procedure, Postgres backup, live-mode checklist, runbook, external dead man's switch (Monitor pings an outside heartbeat service; silence triggers the alert, covering n8n/WSL down), e2e check that each workflow's `errorWorkflow` setting is correct (it lives only in n8n, not in the `.sdk.ts` files, so a workflow recreated from its file would silently lose alerting): Intake, Processor and Monitor must point at the Error Handler id, and the Error Handler and Send Alert must have none | TODO |
 | M6 | Portfolio packaging: README with architecture diagram, failure scenarios with proof, 2-minute demo script | TODO |
 
 ## M3: Stripe Processor
