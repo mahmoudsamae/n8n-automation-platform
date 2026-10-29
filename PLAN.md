@@ -67,4 +67,4 @@ Starts after M3 (M4 and M5 can finish first). Only claims backed by evidence fro
    `scripts/e2e.ps1` creates them with real `evt_...` ids, so the `evt_test_%` filter does not match them.
 7. **Mailpit volume:** add a named volume for Mailpit in `~/n8n/docker-compose.yml` (with `MP_DATABASE` pointing into it) so the inbox
    survives `docker restart`/`compose down`. Today a restart wipes it, which hid emails during the M3 Mailpit-down proof.
-   Keep the compose copy in `C:\dev\claude-config\n8n\` in sync.
+   Keep the compose copy in `C:\dev\claude-config\n8n\` in sync by running `C:\dev\claude-config\sync.ps1` (it refuses literal secrets).

@@ -12,8 +12,8 @@ Intake only verifies, classifies and stores (fast). All slow work belongs to the
   Start: `wsl -d Ubuntu bash -c "cd ~/n8n && docker compose up -d"`.
 - Containers: `n8n` (:5678), `postgres` (127.0.0.1:5432), `mailpit` (UI :8025).
 - n8n credential: `Postgres automation` (id `XVNN7sIThniqsuOf`). DB and user are both `automation`.
-- Env var NAMES (values live only in the compose file, never copy them here):
-  `STRIPE_WEBHOOK_SECRET`, `NODE_FUNCTION_ALLOW_BUILTIN`, `N8N_BLOCK_ENV_ACCESS_IN_NODE`,
+- Env var NAMES (the compose file only holds `${VAR}` references; real values live in `~/n8n/.env` in WSL, never copy them here):
+  `STRIPE_WEBHOOK_SECRET`, `TELEGRAM_CHAT_ID`, `NODE_FUNCTION_ALLOW_BUILTIN`, `N8N_BLOCK_ENV_ACCESS_IN_NODE`,
   `GENERIC_TIMEZONE`, `TZ`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`.
 - n8n credential: `Mailpit SMTP` (id `nxXABuEVvevioUzb`; host `mailpit`, port 1025, no auth). Mailpit keeps no history across restarts.
 - n8n credential: `Telegram alerts` (id `kNsPsjXulOh7i4RQ`, Telegram bot). Chat ID is available in workflows as `$env.TELEGRAM_CHAT_ID`.
