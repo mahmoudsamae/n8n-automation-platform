@@ -48,7 +48,7 @@ wsl -d Ubuntu docker exec postgres psql -U automation -d automation -c "select e
 - `stripe trigger` fires ~7 events; only the `checkout.session.completed` one is `pending`.
 - Prove the 500 path by `wsl -d Ubuntu docker stop postgres`, trigger, then `docker start postgres` and resend.
   Do not edit the workflow to simulate failure.
-- Test rows use `event_id LIKE 'evt_test_%'`; delete only those.
+- Test rows use `event_id LIKE 'evt_test_%'`; delete only those. Once `side_effects` exists, delete its rows first (FK is ON DELETE RESTRICT).
 
 ## Gotchas learned
 - NEVER set `alwaysOutputData: true` on the Insert Event node. When the DB is down it emits an empty item
