@@ -86,4 +86,5 @@ wsl -d Ubuntu docker exec postgres psql -U automation -d automation -c "select e
 - Every change to a live workflow must be exported to its `.sdk.ts` file in the same session, then diffed.
 - Never print or log secrets (signing secrets, tokens, DB passwords). Redact `whsec_` before showing any output.
 - Ask before deleting files, rewriting git history, or running DB migrations (schema changes need approval).
+- Before declaring any workflow change done, run `scripts/e2e.ps1` and show the summary.
 - Stripe is test mode only until M5.

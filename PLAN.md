@@ -59,3 +59,12 @@ Starts after M3 (M4 and M5 can finish first). Only claims backed by evidence fro
 3. **DEMO.md:** a 2-minute video script with timestamps, the exact commands to type, and what should be on screen at each step.
 4. **No secrets:** screenshots, logs and commands are redacted (no `whsec_`, bot tokens, passwords).
 5. **Fresh-clone check:** the README setup is followed once on a clean folder and the result is noted in the README.
+6. **Demo-reset script:** one script (for example `scripts/demo-reset.sql` plus a PowerShell wrapper) that deletes all test data in FK order:
+   `side_effects` first, then `invoices`, then `stripe_events` (all three FKs are `ON DELETE RESTRICT`, so the order is required).
+   It must not touch the schema, and the user runs it themselves. Decide at build time whether it wipes everything or only `evt_test_%` rows
+   plus stripe-CLI test events, and print row counts before and after.
+   It must also delete events tagged with Stripe metadata `e2e=true` (`payload->'data'->'object'->'metadata'->>'e2e' = 'true'`):
+   `scripts/e2e.ps1` creates them with real `evt_...` ids, so the `evt_test_%` filter does not match them.
+7. **Mailpit volume:** add a named volume for Mailpit in `~/n8n/docker-compose.yml` (with `MP_DATABASE` pointing into it) so the inbox
+   survives `docker restart`/`compose down`. Today a restart wipes it, which hid emails during the M3 Mailpit-down proof.
+   Keep the compose copy in `C:\dev\claude-config\n8n\` in sync.
