@@ -69,6 +69,9 @@ function Assert-Counts([string]$EventId, [string]$InvoiceNumber, [string]$Label)
 # ---------- 1. Preflight ----------
 Write-Host '== 1. Preflight ==' -ForegroundColor Cyan
 
+& "$PSScriptRoot\lint-migrations.ps1"
+Write-Step 'migrations lint (no ON DELETE CASCADE)' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
+
 $running = @()
 try {
     $running = @(wsl -d Ubuntu bash -c "cd ~/n8n && docker compose ps --status running --services") |
