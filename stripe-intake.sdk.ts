@@ -1,5 +1,7 @@
 import { workflow, node, trigger, ifElse, expr } from '@n8n/workflow-sdk';
 
+// Settings that the SDK file does not express (set via update_workflow): settings.errorWorkflow = c2NT8k3JGpuS3r6I (Stripe Error Handler).
+
 const stripeWebhook = trigger({
   type: 'n8n-nodes-base.webhook',
   version: 2.2,

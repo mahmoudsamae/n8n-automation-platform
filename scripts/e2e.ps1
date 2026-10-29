@@ -91,6 +91,14 @@ try {
     Write-Step 'n8n answers on :5678' $false $_.Exception.Message
 }
 
+# Migration 005 (M4) adds the columns the Processor, Monitor and replay.ps1 rely on.
+try {
+    $m5 = Invoke-Sql "select (select count(*) from information_schema.columns where table_name = 'stripe_events' and column_name in ('alerted_at', 'pending_since')) || '|' || coalesce(to_regclass('public.event_replays')::text, 'missing')"
+    Write-Step 'migration 005 applied (alerted_at, pending_since, event_replays)' ($m5 -eq '2|event_replays') $m5
+} catch {
+    Write-Step 'migration 005 applied (alerted_at, pending_since, event_replays)' $false $_.Exception.Message
+}
+
 # Two listeners would forward every event twice and skew the duplicate checks.
 $existing = Get-Process -Name stripe -ErrorAction SilentlyContinue
 Write-Step 'no other stripe CLI process running' (-not $existing) $(if ($existing) { 'stop it first (it may be a stripe listen)' } else { '' })
@@ -187,6 +195,21 @@ limit 1
     # Without this, unchanged counts would prove nothing: the Processor must really have re-run.
     Write-Step 'attempts increased (proves a real re-run)' ([int]$attemptsAfter -gt $attemptsBefore) "$attemptsBefore -> $attemptsAfter"
     Assert-Counts $eventId $invoiceNumber 'after Processor re-run'
+
+    # ---- 6c. replay safety ----
+    Write-Host "`n== 6c. replay.ps1 refuses what it must refuse ==" -ForegroundColor Cyan
+    $rowBefore = Invoke-Sql "select status || '|' || attempts || '|' || pending_since from stripe_events where event_id = '$eventId'"
+    $replaysBefore = [int](Invoke-Sql "select count(*) from event_replays where event_id = '$eventId'")
+    $null = & "$PSScriptRoot\replay.ps1" -EventId $eventId -Reason 'e2e: a done event must be refused'
+    Write-Step 'replay.ps1 refuses a done event (exit 1)' ($LASTEXITCODE -eq 1) "exit $LASTEXITCODE"
+    $rowAfter = Invoke-Sql "select status || '|' || attempts || '|' || pending_since from stripe_events where event_id = '$eventId'"
+    Write-Step 'refused replay left the event row unchanged' ($rowAfter -eq $rowBefore)
+    $replaysAfter = [int](Invoke-Sql "select count(*) from event_replays where event_id = '$eventId'")
+    Write-Step 'refused replay wrote no event_replays row' ($replaysAfter -eq $replaysBefore) "found $replaysAfter"
+    $null = & "$PSScriptRoot\replay.ps1" -EventId "x'; drop table stripe_events;--" -Reason 'e2e: malformed id'
+    Write-Step 'replay.ps1 rejects a malformed event id (exit 2)' ($LASTEXITCODE -eq 2) "exit $LASTEXITCODE"
+    $stillThere = [int](Invoke-Sql 'select count(*) from stripe_events')
+    Write-Step 'stripe_events still exists after the malformed-id attempt' ($stillThere -gt 0) "rows $stillThere"
 
     # ---- 7. bad signature ----
     Write-Host "`n== 7. Fake-signed request ==" -ForegroundColor Cyan
