@@ -63,7 +63,8 @@ wsl -d Ubuntu docker exec postgres psql -U automation -d automation -c "select e
 - `stripe trigger` fires ~7 events; only the `checkout.session.completed` one is `pending`.
 - Prove the 500 path by `wsl -d Ubuntu docker stop postgres`, trigger, then `docker start postgres` and resend.
   Do not edit the workflow to simulate failure.
-- Test rows use `event_id LIKE 'evt_test_%'`; delete only those. Once `side_effects` exists, delete its rows first (FK is ON DELETE RESTRICT).
+- Test rows use `event_id LIKE 'evt_test_%'`; delete only those. `scripts/e2e.ps1` events have real `evt_...` ids and are tagged by
+  Stripe metadata `e2e=true`, so that filter misses them. Delete order (all FKs RESTRICT): `side_effects`, `invoices`, `stripe_events`.
 
 ## Gotchas learned
 - NEVER set `alwaysOutputData: true` on the Insert Event node. When the DB is down it emits an empty item
@@ -80,9 +81,11 @@ wsl -d Ubuntu docker exec postgres psql -U automation -d automation -c "select e
 - The n8n Telegram node's error output is `{error: "<string>"}` (no httpCode). Its default parse mode choked on `_` in `evt_...`; parse_mode is set to HTML.
 - SDK `.onError()`: write `node.onError(handlerChain).to(next)`. `node.to(next).onError(h)` attaches the handler to `next`, and
   statement-level `.onTrue()` chains on already-used nodes are silently dropped. After building, check connections with `get_workflow_details`.
-- `stripe-processor.sdk.ts` was verified by building it as a scratch workflow and comparing all connections and parameters with the live one.
 
 ## Rules
+- Missing or invalid required data => mark the event `failed` with a clear `last_error`. Never substitute a default or fallback value.
+- Any table holding financial or legal records uses `ON DELETE RESTRICT`, never CASCADE.
+- Task specs live in `docs/tasks/` (long pasted prompts get truncated). Point to the file instead of pasting.
 - Every change to a live workflow must be exported to its `.sdk.ts` file in the same session, then diffed.
 - Never print or log secrets (signing secrets, tokens, DB passwords). Redact `whsec_` before showing any output.
 - Ask before deleting files, rewriting git history, or running DB migrations (schema changes need approval).
