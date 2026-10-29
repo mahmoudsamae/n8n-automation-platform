@@ -29,23 +29,16 @@ Intake only verifies, classifies and stores (fast). All slow work belongs to the
 `received_at TIMESTAMPTZ NOT NULL DEFAULT now()`, `processed_at TIMESTAMPTZ`, `claimed_at TIMESTAMPTZ` (set by the Processor when it claims a row; migration 003).
 Migration 005 adds `alerted_at TIMESTAMPTZ` (Monitor sets it after alerting; Processor claim and replay clear it) and
 `pending_since TIMESTAMPTZ NOT NULL DEFAULT now()` (when the row last became pending; stuck-row release and replay reset it).
-Status CHECK: `pending | processing | done | failed | ignored`.
-Partial index on `(status, received_at)` where status is pending or failed.
 
 Applied by the user (migrations 002-005):
-- `event_replays(replay_id, event_id, reason, replayed_at)`, FK ON DELETE RESTRICT; one row per manual replay.
-- `side_effects(event_id, kind, done_at)`, PK `(event_id, kind)`, kind is `email` or `telegram`, FK ON DELETE RESTRICT.
-- `invoices(invoice_id, invoice_number, event_id UNIQUE, customer_email, amount_cents, currency, created_at)`,
-  FK ON DELETE RESTRICT. `invoice_number` = `INV-<year>-<6 digits>` from sequence `invoice_number_seq` (does not reset per year; gaps possible).
-  `amount_cents` is Stripe's smallest unit as-is (JPY 1500 = 1500).
+- `event_replays` (one row per manual replay), `side_effects` (PK `(event_id, kind)`, kind `email` or `telegram`), `invoices` (event_id UNIQUE): all FK ON DELETE RESTRICT.
+  `invoice_number` = `INV-<year>-<6 digits>` from `invoice_number_seq` (no yearly reset; gaps possible). `amount_cents` is Stripe's smallest unit as-is (JPY 1500 = 1500).
 The user reviews and runs migrations themselves; Claude never runs them. Check the table exists before relying on it.
 
 ## Processor behaviour (M3, built)
 - Every minute: release rows stuck in `processing` > 10 min (to `pending` if attempts < 5, else `failed`), then claim up to 10
   (`pending`, or `failed` with attempts < 5) via `FOR UPDATE SKIP LOCKED`.
-- Per event: validate payload -> create invoice (idempotent on event_id) -> email (skip if `side_effects` has it) -> Telegram (same) -> `done`.
 - Recipient is `customer_details.email` from the event. Missing/invalid email, amount or currency => event `failed` with a clear `last_error`. No fallback address.
-- Amounts: `Intl.NumberFormat('de-DE')`; zero-decimal (JPY...) and three-decimal (KWD...) currencies handled.
 - Telegram: up to 3 tries, 2 s then 4 s backoff, only for 429/5xx/network-looking errors. Other errors fail fast; the next run retries (max 5 attempts).
 - Delivery is at-least-once: a crash between a send and its `side_effects` insert can duplicate that one message.
 
@@ -64,7 +57,6 @@ The user reviews and runs migrations themselves; Claude never runs them. Check t
 - Intake responses: 200 `{"received":true}` (new), 200 `{"received":true,"duplicate":true}`,
   400 bad signature or timestamp older than 5 min, 500 if the insert failed (so Stripe retries).
   Never 200 for an event that was not stored.
-- Dedupe is `INSERT ... ON CONFLICT (event_id) DO NOTHING RETURNING event_id`.
 
 ## Testing (PowerShell)
 ```
@@ -77,27 +69,23 @@ wsl -d Ubuntu docker exec postgres psql -U automation -d automation -c "select e
 - `stripe trigger` fires ~7 events; only the `checkout.session.completed` one is `pending`.
 - Prove the 500 path by `wsl -d Ubuntu docker stop postgres`, trigger, then `docker start postgres` and resend.
   Do not edit the workflow to simulate failure.
+- Seed a test row in a chosen state (stuck, stale, dead) with `scripts\seed-test-event.ps1`; it copies a real done payload and accepts only `evt_test_` ids.
 - Test rows use `event_id LIKE 'evt_test_%'`; delete only those. `scripts/e2e.ps1` events have real `evt_...` ids and are tagged by
   Stripe metadata `e2e=true`, so that filter misses them. Delete order (all FKs RESTRICT): `event_replays`, `side_effects`, `invoices`, `stripe_events`.
 
 ## Gotchas learned
 - NEVER set `alwaysOutputData: true` on the Insert Event node. When the DB is down it emits an empty item
   on the success output as well as the error output, so "200 Duplicate" races "500" and wins.
-- A zero-row `ON CONFLICT DO NOTHING` already returns `{"success":true}`; that is how the duplicate branch fires.
-- Webhook has `rawBody: true`; the Code node reads bytes from binary `data` via `this.helpers.getBinaryDataBuffer`.
-  Re-serialized JSON would break the HMAC.
 - n8n MCP: `validate_workflow` / `create_workflow_from_code` take the code inline (not a file path).
   Small edits to a live workflow: `update_workflow` operations, then `publish_workflow`.
-
 - Postgres nodes that write per item need `options.queryBatching: 'independently'`. Default batching merges items into one output,
   which breaks `$('Prepare Event').item` ("Multiple matches found").
-- A zero-row `UPDATE ... RETURNING` emits `{"success":true}` (a phantom item). The Processor guards with `Claimed Event?`; keep it.
+- A zero-row `ON CONFLICT DO NOTHING` or `UPDATE ... RETURNING` emits `{"success":true}` (a phantom item): Intake's duplicate branch relies on it; the Processor guards with `Claimed Event?`, keep it.
 - The n8n Telegram node's error output is `{error: "<string>"}` (no httpCode). Its default parse mode choked on `_` in `evt_...`; parse_mode is set to HTML.
 - SDK `.onError()`: write `node.onError(handlerChain).to(next)`. `node.to(next).onError(h)` attaches the handler to `next`, and
   statement-level `.onTrue()` chains on already-used nodes are silently dropped. After building, check connections with `get_workflow_details`.
-
 - The SDK files cannot carry workflow settings. `errorWorkflow` (= Error Handler id) is set with `update_workflow` on Intake, Processor and Monitor; each file's header says so.
-- Telegram alert text uses parse_mode HTML: escape `& < >` in anything dynamic (done in `Prepare Alert`).
+- n8n MCP cannot execute a workflow with an Execute Workflow Trigger (Send Alert); prove sub-workflows through a caller. Postgres, n8n and Mailpit timestamps are UTC; the Windows clock is currently UTC+1.
 
 ## Rules
 - Missing or invalid required data => mark the event `failed` with a clear `last_error`. Never substitute a default or fallback value.
