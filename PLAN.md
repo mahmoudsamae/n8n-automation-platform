@@ -6,7 +6,7 @@ Pipeline: Stripe -> Intake -> `stripe_events` -> Processor -> Mailpit + Telegram
 |---|-----------|--------|
 | M1 | Infra and storage: docker compose (n8n, postgres, mailpit), `stripe_events` table, `Postgres automation` credential | DONE |
 | M2 | Stripe Intake workflow: signature check, classify, idempotent insert, 200/400/500 contract. Proven with stripe CLI, including DB-down 500 | DONE |
-| M3 | Stripe Processor workflow (below) | TODO |
+| M3 | Stripe Processor workflow (below) | BUILT and proven, awaiting review (real Telegram 429/5xx not provoked; see session notes) |
 | M4 | Failure visibility: error workflow, alert when an event ends `failed`, safe way to replay a failed event | TODO |
 | M5 | Hardening: secret rotation procedure, Postgres backup, live-mode checklist, runbook | TODO |
 | M6 | Portfolio packaging: README with architecture diagram, failure scenarios with proof, 2-minute demo script | TODO |

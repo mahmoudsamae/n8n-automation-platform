@@ -5,7 +5,7 @@ Intake only verifies, classifies and stores (fast). All slow work belongs to the
 
 ## Workflows (n8n id -> source file)
 - Stripe Intake `3j0pWVoxvDY2sdO5` -> `stripe-intake.sdk.ts` (live, published)
-- Stripe Processor -> not built yet, see PLAN.md (M3)
+- Stripe Processor `ylR2t9B0ZAH1cLfq` -> `stripe-processor.sdk.ts` (live, published; schedule every 1 min)
 
 ## Infra
 - n8n, postgres, mailpit run via docker compose in WSL Ubuntu: `~/n8n/docker-compose.yml`.
@@ -15,18 +15,33 @@ Intake only verifies, classifies and stores (fast). All slow work belongs to the
 - Env var NAMES (values live only in the compose file, never copy them here):
   `STRIPE_WEBHOOK_SECRET`, `NODE_FUNCTION_ALLOW_BUILTIN`, `N8N_BLOCK_ENV_ACCESS_IN_NODE`,
   `GENERIC_TIMEZONE`, `TZ`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`.
+- n8n credential: `Mailpit SMTP` (id `nxXABuEVvevioUzb`; host `mailpit`, port 1025, no auth). Mailpit keeps no history across restarts.
+- n8n credential: `Telegram alerts` (id `kNsPsjXulOh7i4RQ`, Telegram bot). Chat ID is available in workflows as `$env.TELEGRAM_CHAT_ID`.
 - `STRIPE_WEBHOOK_SECRET` must equal the `whsec_...` that `stripe listen` prints, or every event gets 400.
   `stripe listen` prints it on STDERR.
 
 ## Table `stripe_events`
 `event_id TEXT PK`, `event_type TEXT NOT NULL`, `status TEXT NOT NULL DEFAULT 'pending'`,
 `attempts INT NOT NULL DEFAULT 0`, `last_error TEXT`, `payload JSONB NOT NULL`,
-`received_at TIMESTAMPTZ NOT NULL DEFAULT now()`, `processed_at TIMESTAMPTZ`.
+`received_at TIMESTAMPTZ NOT NULL DEFAULT now()`, `processed_at TIMESTAMPTZ`, `claimed_at TIMESTAMPTZ` (set by the Processor when it claims a row; migration 003).
 Status CHECK: `pending | processing | done | failed | ignored`.
 Partial index on `(status, received_at)` where status is pending or failed.
 
-Planned: `side_effects(event_id, kind, done_at)`, PK `(event_id, kind)`, in `migrations/002_side_effects.sql`.
+Applied by the user (migrations 002-004):
+- `side_effects(event_id, kind, done_at)`, PK `(event_id, kind)`, kind is `email` or `telegram`, FK ON DELETE RESTRICT.
+- `invoices(invoice_id, invoice_number, event_id UNIQUE, customer_email, amount_cents, currency, created_at)`,
+  FK ON DELETE RESTRICT. `invoice_number` = `INV-<year>-<6 digits>` from sequence `invoice_number_seq` (does not reset per year; gaps possible).
+  `amount_cents` is Stripe's smallest unit as-is (JPY 1500 = 1500).
 The user reviews and runs migrations themselves; Claude never runs them. Check the table exists before relying on it.
+
+## Processor behaviour (M3, built)
+- Every minute: release rows stuck in `processing` > 10 min (to `pending` if attempts < 5, else `failed`), then claim up to 10
+  (`pending`, or `failed` with attempts < 5) via `FOR UPDATE SKIP LOCKED`.
+- Per event: validate payload -> create invoice (idempotent on event_id) -> email (skip if `side_effects` has it) -> Telegram (same) -> `done`.
+- Recipient is `customer_details.email` from the event. Missing/invalid email, amount or currency => event `failed` with a clear `last_error`. No fallback address.
+- Amounts: `Intl.NumberFormat('de-DE')`; zero-decimal (JPY...) and three-decimal (KWD...) currencies handled.
+- Telegram: up to 3 tries, 2 s then 4 s backoff, only for 429/5xx/network-looking errors. Other errors fail fast; the next run retries (max 5 attempts).
+- Delivery is at-least-once: a crash between a send and its `side_effects` insert can duplicate that one message.
 
 ## Decided status rules
 - Intake sets `pending` if type is `checkout.session.completed` AND `payment_status = 'paid'`,
@@ -58,6 +73,14 @@ wsl -d Ubuntu docker exec postgres psql -U automation -d automation -c "select e
   Re-serialized JSON would break the HMAC.
 - n8n MCP: `validate_workflow` / `create_workflow_from_code` take the code inline (not a file path).
   Small edits to a live workflow: `update_workflow` operations, then `publish_workflow`.
+
+- Postgres nodes that write per item need `options.queryBatching: 'independently'`. Default batching merges items into one output,
+  which breaks `$('Prepare Event').item` ("Multiple matches found").
+- A zero-row `UPDATE ... RETURNING` emits `{"success":true}` (a phantom item). The Processor guards with `Claimed Event?`; keep it.
+- The n8n Telegram node's error output is `{error: "<string>"}` (no httpCode). Its default parse mode choked on `_` in `evt_...`; parse_mode is set to HTML.
+- SDK `.onError()`: write `node.onError(handlerChain).to(next)`. `node.to(next).onError(h)` attaches the handler to `next`, and
+  statement-level `.onTrue()` chains on already-used nodes are silently dropped. After building, check connections with `get_workflow_details`.
+- `stripe-processor.sdk.ts` was verified by building it as a scratch workflow and comparing all connections and parameters with the live one.
 
 ## Rules
 - Every change to a live workflow must be exported to its `.sdk.ts` file in the same session, then diffed.
