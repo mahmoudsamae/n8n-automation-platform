@@ -1,0 +1,25 @@
+# secrets
+.env
+.env.*
+*.pem
+*.key
+
+# logs
+*.log
+*.log.*
+logs/
+
+# scratch / temp
+scratch/
+tmp/
+*.before.*
+*.bak
+*.tmp
+body.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+node_modules/
