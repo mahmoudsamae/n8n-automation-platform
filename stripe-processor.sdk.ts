@@ -1,5 +1,7 @@
 import { workflow, node, trigger, ifElse, sticky, expr } from '@n8n/workflow-sdk';
 
+// Settings that the SDK file does not express (set via update_workflow): settings.errorWorkflow = c2NT8k3JGpuS3r6I (Stripe Error Handler).
+
 const everyMinute = trigger({
   type: 'n8n-nodes-base.scheduleTrigger',
   version: 1.4,
@@ -20,7 +22,7 @@ const releaseStuck = node({
       resource: 'database',
       operation: 'executeQuery',
       query:
-        "UPDATE stripe_events SET status = CASE WHEN attempts < 5 THEN 'pending' ELSE 'failed' END, last_error = 'Released: stuck in processing for over 10 minutes' WHERE status = 'processing' AND claimed_at < now() - interval '10 minutes';",
+        "UPDATE stripe_events SET status = CASE WHEN attempts < 5 THEN 'pending' ELSE 'failed' END, pending_since = CASE WHEN attempts < 5 THEN now() ELSE pending_since END, last_error = 'Released: stuck in processing for over 10 minutes' WHERE status = 'processing' AND claimed_at < now() - interval '10 minutes';",
     },
     credentials: { postgres: { id: 'XVNN7sIThniqsuOf', name: 'Postgres automation' } },
     position: [420, 400],
@@ -37,7 +39,7 @@ const claimEvents = node({
       resource: 'database',
       operation: 'executeQuery',
       query:
-        "WITH picked AS (SELECT event_id FROM stripe_events WHERE status = 'pending' OR (status = 'failed' AND attempts < 5) ORDER BY received_at LIMIT 10 FOR UPDATE SKIP LOCKED) UPDATE stripe_events e SET status = 'processing', attempts = e.attempts + 1, claimed_at = now() FROM picked WHERE e.event_id = picked.event_id RETURNING e.event_id, e.attempts, e.payload, EXISTS (SELECT 1 FROM side_effects s WHERE s.event_id = e.event_id AND s.kind = 'email') AS email_done, EXISTS (SELECT 1 FROM side_effects s WHERE s.event_id = e.event_id AND s.kind = 'telegram') AS telegram_done;",
+        "WITH picked AS (SELECT event_id FROM stripe_events WHERE status = 'pending' OR (status = 'failed' AND attempts < 5) ORDER BY received_at LIMIT 10 FOR UPDATE SKIP LOCKED) UPDATE stripe_events e SET status = 'processing', attempts = e.attempts + 1, claimed_at = now(), alerted_at = NULL FROM picked WHERE e.event_id = picked.event_id RETURNING e.event_id, e.attempts, e.payload, EXISTS (SELECT 1 FROM side_effects s WHERE s.event_id = e.event_id AND s.kind = 'email') AS email_done, EXISTS (SELECT 1 FROM side_effects s WHERE s.event_id = e.event_id AND s.kind = 'telegram') AS telegram_done;",
     },
     credentials: { postgres: { id: 'XVNN7sIThniqsuOf', name: 'Postgres automation' } },
     position: [640, 400],

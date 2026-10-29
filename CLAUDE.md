@@ -6,6 +6,9 @@ Intake only verifies, classifies and stores (fast). All slow work belongs to the
 ## Workflows (n8n id -> source file)
 - Stripe Intake `3j0pWVoxvDY2sdO5` -> `stripe-intake.sdk.ts` (live, published)
 - Stripe Processor `ylR2t9B0ZAH1cLfq` -> `stripe-processor.sdk.ts` (live, published; schedule every 1 min)
+- Stripe Error Handler `c2NT8k3JGpuS3r6I` -> `stripe-error-handler.sdk.ts` (errorWorkflow of Intake, Processor, Monitor)
+- Stripe Monitor `yeSlEcPp87vCJT7D` -> `stripe-monitor.sdk.ts` (schedule every 5 min)
+- Stripe Send Alert `WO2ebvkZGK5NxzVo` -> `stripe-send-alert.sdk.ts` (sub-workflow, Telegram + email; called by Handler and Monitor)
 
 ## Infra
 - n8n, postgres, mailpit run via docker compose in WSL Ubuntu: `~/n8n/docker-compose.yml`.
@@ -24,10 +27,13 @@ Intake only verifies, classifies and stores (fast). All slow work belongs to the
 `event_id TEXT PK`, `event_type TEXT NOT NULL`, `status TEXT NOT NULL DEFAULT 'pending'`,
 `attempts INT NOT NULL DEFAULT 0`, `last_error TEXT`, `payload JSONB NOT NULL`,
 `received_at TIMESTAMPTZ NOT NULL DEFAULT now()`, `processed_at TIMESTAMPTZ`, `claimed_at TIMESTAMPTZ` (set by the Processor when it claims a row; migration 003).
+Migration 005 adds `alerted_at TIMESTAMPTZ` (Monitor sets it after alerting; Processor claim and replay clear it) and
+`pending_since TIMESTAMPTZ NOT NULL DEFAULT now()` (when the row last became pending; stuck-row release and replay reset it).
 Status CHECK: `pending | processing | done | failed | ignored`.
 Partial index on `(status, received_at)` where status is pending or failed.
 
-Applied by the user (migrations 002-004):
+Applied by the user (migrations 002-005):
+- `event_replays(replay_id, event_id, reason, replayed_at)`, FK ON DELETE RESTRICT; one row per manual replay.
 - `side_effects(event_id, kind, done_at)`, PK `(event_id, kind)`, kind is `email` or `telegram`, FK ON DELETE RESTRICT.
 - `invoices(invoice_id, invoice_number, event_id UNIQUE, customer_email, amount_cents, currency, created_at)`,
   FK ON DELETE RESTRICT. `invoice_number` = `INV-<year>-<6 digits>` from sequence `invoice_number_seq` (does not reset per year; gaps possible).
@@ -42,6 +48,14 @@ The user reviews and runs migrations themselves; Claude never runs them. Check t
 - Amounts: `Intl.NumberFormat('de-DE')`; zero-decimal (JPY...) and three-decimal (KWD...) currencies handled.
 - Telegram: up to 3 tries, 2 s then 4 s backoff, only for 429/5xx/network-looking errors. Other errors fail fast; the next run retries (max 5 attempts).
 - Delivery is at-least-once: a crash between a send and its `side_effects` insert can duplicate that one message.
+
+## Failure visibility (M4, built)
+- Monitor sends ONE alert listing up to 10 events, then sets `alerted_at` (after delivery, so at-least-once). Kinds: `dead` (failed, attempts >= 5),
+  `stale pending` (pending 10+ min counted from `pending_since`, never `received_at`), `stuck failed` (failed, attempts < 5, `COALESCE(claimed_at, pending_since)` 10+ min old),
+  `stuck processing` (`claimed_at` 20+ min old: twice the Processor's 10 min release, so it never races a healthy Processor).
+- Workflow crashes go through the Error Handler: one alert per (workflow | node) per 15 min, state in static data so it works with Postgres down.
+- Replay a dead event: `powershell -File scripts\replay.ps1 -EventId evt_... -Reason "..." [-DryRun]`. Only `failed` events; never touches `side_effects` or `invoices`.
+- Not covered: n8n or WSL down (M5 dead man's switch). An undeliverable error alert still uses up its 15 min throttle window (see PLAN.md known gaps).
 
 ## Decided status rules
 - Intake sets `pending` if type is `checkout.session.completed` AND `payment_status = 'paid'`,
@@ -64,7 +78,7 @@ wsl -d Ubuntu docker exec postgres psql -U automation -d automation -c "select e
 - Prove the 500 path by `wsl -d Ubuntu docker stop postgres`, trigger, then `docker start postgres` and resend.
   Do not edit the workflow to simulate failure.
 - Test rows use `event_id LIKE 'evt_test_%'`; delete only those. `scripts/e2e.ps1` events have real `evt_...` ids and are tagged by
-  Stripe metadata `e2e=true`, so that filter misses them. Delete order (all FKs RESTRICT): `side_effects`, `invoices`, `stripe_events`.
+  Stripe metadata `e2e=true`, so that filter misses them. Delete order (all FKs RESTRICT): `event_replays`, `side_effects`, `invoices`, `stripe_events`.
 
 ## Gotchas learned
 - NEVER set `alwaysOutputData: true` on the Insert Event node. When the DB is down it emits an empty item
@@ -81,6 +95,9 @@ wsl -d Ubuntu docker exec postgres psql -U automation -d automation -c "select e
 - The n8n Telegram node's error output is `{error: "<string>"}` (no httpCode). Its default parse mode choked on `_` in `evt_...`; parse_mode is set to HTML.
 - SDK `.onError()`: write `node.onError(handlerChain).to(next)`. `node.to(next).onError(h)` attaches the handler to `next`, and
   statement-level `.onTrue()` chains on already-used nodes are silently dropped. After building, check connections with `get_workflow_details`.
+
+- The SDK files cannot carry workflow settings. `errorWorkflow` (= Error Handler id) is set with `update_workflow` on Intake, Processor and Monitor; each file's header says so.
+- Telegram alert text uses parse_mode HTML: escape `& < >` in anything dynamic (done in `Prepare Alert`).
 
 ## Rules
 - Missing or invalid required data => mark the event `failed` with a clear `last_error`. Never substitute a default or fallback value.
