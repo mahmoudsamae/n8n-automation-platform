@@ -1,6 +1,8 @@
 import { workflow, node, trigger, ifElse, sticky, expr } from '@n8n/workflow-sdk';
 
 // Settings that the SDK file does not express (set via update_workflow): settings.errorWorkflow = c2NT8k3JGpuS3r6I (Stripe Error Handler).
+// Depends on: workflow Stripe Render Invoice (id 3dvdSRSD6ObBVsxy, called by id below: if it is recreated, update the id here),
+// credential "Stripe read-only" (read-only Stripe test key, id qtmzPq7nRsOF9MAW) and env var INVOICE_EMAIL_FROM (sender of the invoice email).
 
 const everyMinute = trigger({
   type: 'n8n-nodes-base.scheduleTrigger',
@@ -64,12 +66,16 @@ const obj = (payload && payload.data && payload.data.object) || {};
 const details = obj.customer_details || {};
 
 const email = typeof details.email === 'string' ? details.email.trim() : '';
+const name = typeof details.name === 'string' ? details.name.trim() : '';
+const sessionId = typeof obj.id === 'string' ? obj.id : '';
 const currency = typeof obj.currency === 'string' ? obj.currency.toLowerCase() : '';
 const amount = obj.amount_total;
 
 let problem = '';
 if (!email) problem = 'customer_details.email is missing in the event payload';
 else if (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email)) problem = 'customer_details.email is not a valid address';
+else if (!name) problem = 'customer_details.name is missing in the event payload';
+else if (!/^cs_(test|live)_[A-Za-z0-9_]+$/.test(sessionId)) problem = 'checkout session id is missing or invalid in the event payload';
 else if (!Number.isInteger(amount) || amount < 0) problem = 'amount_total is missing or invalid in the event payload';
 else if (!/^[a-z]{3}$/.test(currency)) problem = 'currency is missing or invalid in the event payload';
 
@@ -100,6 +106,8 @@ return {
     telegram_done: row.telegram_done,
     problem,
     customer_email: email,
+    customer_name: name,
+    session_id: sessionId,
     amount_minor: Number.isInteger(amount) ? amount : null,
     currency,
     amount_display: display,
@@ -108,7 +116,7 @@ return {
     },
     position: [860, 400],
   },
-  output: [{ event_id: 'evt_1', attempts: 1, email_done: false, telegram_done: false, problem: '', customer_email: 'a@b.co', amount_minor: 1000, currency: 'eur', amount_display: '10,00 €' }],
+  output: [{ event_id: 'evt_1', attempts: 1, email_done: false, telegram_done: false, problem: '', customer_email: 'a@b.co', customer_name: 'Erika Mustermann', session_id: 'cs_test_a1', amount_minor: 3000, currency: 'eur', amount_display: '30,00 €' }],
 });
 
 const claimedEvent = ifElse({
@@ -162,15 +170,17 @@ const createInvoice = node({
       resource: 'database',
       operation: 'executeQuery',
       query:
-        'WITH ins AS (INSERT INTO invoices (event_id, customer_email, amount_cents, currency) SELECT $1::text, $2::text, $3::bigint, $4::text WHERE NOT EXISTS (SELECT 1 FROM invoices WHERE event_id = $1::text) ON CONFLICT (event_id) DO NOTHING RETURNING invoice_number) SELECT invoice_number FROM ins UNION ALL SELECT invoice_number FROM invoices WHERE event_id = $1::text LIMIT 1;',
+        'WITH ins AS (INSERT INTO invoices (event_id, customer_email, amount_cents, currency, customer_name, payment_method, line_items) SELECT $1::text, $2::text, $3::bigint, $4::text, $5::text, $6::text, $7::jsonb WHERE NOT EXISTS (SELECT 1 FROM invoices WHERE event_id = $1::text) ON CONFLICT (event_id) DO NOTHING RETURNING invoice_number) SELECT invoice_number FROM ins UNION ALL SELECT invoice_number FROM invoices WHERE event_id = $1::text LIMIT 1;',
       options: {
-        queryReplacement: expr('{{ [$json.event_id, $json.customer_email, $json.amount_minor, $json.currency] }}'),
+        queryReplacement: expr(
+          '{{ [$json.event_id, $json.customer_email, $json.amount_minor, $json.currency, $json.customer_name, $json.payment_method, $json.line_items_json] }}',
+        ),
         queryBatching: 'independently',
       },
     },
     credentials: { postgres: { id: 'XVNN7sIThniqsuOf', name: 'Postgres automation' } },
     onError: 'continueErrorOutput',
-    position: [1300, 300],
+    position: [3520, -380],
   },
   output: [{ invoice_number: 'INV-2026-000001' }],
 });
@@ -203,14 +213,13 @@ const sendEmail = node({
     name: 'Send Invoice Email',
     parameters: {
       operation: 'send',
-      fromEmail: 'stripe-processor@example.test',
+      fromEmail: expr('{{ $env.INVOICE_EMAIL_FROM }}'),
       toEmail: expr("{{ $('Prepare Event').item.json.customer_email }}"),
-      subject: expr("Invoice {{ $('Create Invoice').item.json.invoice_number }} - payment received ({{ $('Prepare Event').item.json.event_id }})"),
-      emailFormat: 'text',
-      text: expr(
-        "Thank you for your payment.\n\nInvoice: {{ $('Create Invoice').item.json.invoice_number }}\nAmount: {{ $('Prepare Event').item.json.amount_display }}\nReference: {{ $('Prepare Event').item.json.event_id }}\n",
-      ),
-      options: { appendAttribution: false },
+      subject: expr("{{ $('Render Invoice').item.json.subject }}"),
+      emailFormat: 'both',
+      text: expr("{{ $('Render Invoice').item.json.text }}"),
+      html: expr("{{ $('Render Invoice').item.json.html }}"),
+      options: { appendAttribution: false, fileAttachments: 'invoice_pdf' },
     },
     credentials: { smtp: { id: 'nxXABuEVvevioUzb', name: 'Mailpit SMTP' } },
     onError: 'continueErrorOutput',
@@ -258,9 +267,7 @@ const telegramAlreadySent = ifElse({
   },
 });
 
-const telegramText = expr(
-  "Payment received\nInvoice: {{ $('Create Invoice').item.json.invoice_number }}\nAmount: {{ $('Prepare Event').item.json.amount_display }}\nEvent: {{ $('Prepare Event').item.json.event_id }}",
-);
+const telegramText = expr("{{ $('Render Invoice').item.json.telegram_text }}");
 
 const sendTelegram1 = node({
   type: 'n8n-nodes-base.telegram',
@@ -290,7 +297,7 @@ const retryable1 = ifElse({
         options: { caseSensitive: true, leftValue: '', typeValidation: 'loose', version: 2 },
         conditions: [
           {
-            leftValue: expr('{{ /too many requests|retry after|internal server error|bad gateway|service unavailable|gateway time-?out|timed? ?out|econn|enotfound|eai_again|socket hang up|\\b(429|5\\d\\d)\\b/i.test(String($json.error?.message ?? $json.error ?? "")) }}'),
+            leftValue: expr("{{ /too many requests|retry after|internal server error|bad gateway|service unavailable|gateway time-?out|timed? ?out|econn|enotfound|eai_again|socket hang up|\\b(429|5\\d\\d)\\b/i.test(String($json.error?.message ?? $json.error ?? '')) }}"),
             rightValue: '',
             operator: { type: 'boolean', operation: 'true', singleValue: true },
           },
@@ -341,7 +348,7 @@ const retryable2 = ifElse({
         options: { caseSensitive: true, leftValue: '', typeValidation: 'loose', version: 2 },
         conditions: [
           {
-            leftValue: expr('{{ /too many requests|retry after|internal server error|bad gateway|service unavailable|gateway time-?out|timed? ?out|econn|enotfound|eai_again|socket hang up|\\b(429|5\\d\\d)\\b/i.test(String($json.error?.message ?? $json.error ?? "")) }}'),
+            leftValue: expr("{{ /too many requests|retry after|internal server error|bad gateway|service unavailable|gateway time-?out|timed? ?out|econn|enotfound|eai_again|socket hang up|\\b(429|5\\d\\d)\\b/i.test(String($json.error?.message ?? $json.error ?? '')) }}"),
             rightValue: '',
             operator: { type: 'boolean', operation: 'true', singleValue: true },
           },
@@ -429,7 +436,16 @@ const describeFailure = node({
       language: 'javaScript',
       jsCode: `const prep = $('Prepare Event').item.json;
 const err = $json.error;
-let message = $json.problem || (typeof err === 'string' ? err : (err && (err.message || err.description))) || 'unknown error';
+let message = $json.problem;
+if (!message) {
+  if (typeof err === 'string') message = err;
+  else if (err) {
+    // n8n often keeps the useful text (the API's own message) in description, not in message
+    const parts = [err.message, err.description].filter((x) => typeof x === 'string' && x.trim());
+    message = parts.length === 2 && parts[1].includes(parts[0]) ? parts[1] : parts.join(': ');
+  }
+}
+message = message || 'unknown error';
 const where = err && err.node && err.node.name ? '[' + err.node.name + '] ' : '';
 message = where + String(message);
 message = message
@@ -465,10 +481,233 @@ const markFailed = node({
 });
 
 const note = sticky(
-  '## Stripe Processor\nEvery minute: release rows stuck in processing for 10+ min, claim up to 10 pending/failed(attempts<5) rows with FOR UPDATE SKIP LOCKED, then per event: invoice -> email -> Telegram -> done. Failures mark only that event failed.\n\n**Delivery guarantee: at-least-once.** Each send is followed by an INSERT into side_effects. If a run dies between a send and its INSERT, the retry can send that one message twice. Invoice creation is exactly-once (invoices.event_id is UNIQUE).',
+  '## Stripe Processor\nEvery minute: release rows stuck in processing for 10+ min, claim up to 10 pending/failed(attempts<5) rows with FOR UPDATE SKIP LOCKED, then per event: invoice data -> render (Stripe Render Invoice) -> email with PDF -> Telegram -> done. Failures mark only that event failed.\n\n**Invoice data:** if no invoice exists yet, ONE read-only Stripe lookup (3 tries, 2 s then 4 s backoff for 429/5xx/network) gets the product and the payment method actually used; they are stored on the invoice row together with the customer name. Retries and replays render from that row and never call Stripe again. Missing or inconsistent data fails the event, nothing is defaulted.\n\n**Delivery guarantee: at-least-once.** Each send is followed by an INSERT into side_effects. If a run dies between a send and its INSERT, the retry can send that one message twice. Invoice creation is exactly-once (invoices.event_id is UNIQUE). The PDF is only rendered when the email is still to be sent, so a Gotenberg outage cannot block a Telegram message.',
   [],
   { color: 4, position: [200, 40], width: 640, height: 260 },
 );
+
+// ---- Invoice data (M-invoice): one read-only Stripe lookup per invoice, only when no invoice row exists yet ----
+
+const findInvoice = node({
+  type: 'n8n-nodes-base.postgres',
+  version: 2.8,
+  config: {
+    name: 'Find Invoice',
+    parameters: {
+      resource: 'database',
+      operation: 'executeQuery',
+      // Always one row (NULL when there is no invoice yet), so the next IF can tell the two cases apart.
+      query: 'SELECT (SELECT invoice_number FROM invoices WHERE event_id = $1::text) AS invoice_number;',
+      options: { queryReplacement: expr('{{ [$json.event_id] }}'), queryBatching: 'independently' },
+    },
+    credentials: { postgres: { id: 'XVNN7sIThniqsuOf', name: 'Postgres automation' } },
+    position: [1100, -260],
+  },
+  output: [{ invoice_number: null }],
+});
+
+const invoiceExists = ifElse({
+  version: 2.4,
+  config: {
+    name: 'Invoice Exists?',
+    parameters: {
+      conditions: {
+        options: { caseSensitive: true, leftValue: '', typeValidation: 'loose', version: 2 },
+        conditions: [
+          {
+            leftValue: expr('{{ $json.invoice_number }}'),
+            rightValue: '',
+            operator: { type: 'string', operation: 'notEmpty', singleValue: true },
+          },
+        ],
+        combinator: 'and',
+      },
+    },
+    position: [1320, -260],
+  },
+});
+
+const fetchSession = (name: string, position: [number, number]) =>
+  node({
+    type: 'n8n-nodes-base.httpRequest',
+    version: 4.5,
+    config: {
+      name,
+      parameters: {
+        method: 'GET',
+        // The expand[] query is part of the URL on purpose: two query-parameter entries with the same name were serialised by n8n
+        // as an object (expand[0]={"0":...}) and Stripe answered 400.
+        url: expr(
+          "{{ 'https://api.stripe.com/v1/checkout/sessions/' + $('Prepare Event').item.json.session_id + '?expand%5B%5D=line_items&expand%5B%5D=payment_intent.latest_charge' }}",
+        ),
+        authentication: 'predefinedCredentialType',
+        nodeCredentialType: 'stripeApi',
+        options: { timeout: 20000 },
+      },
+      credentials: { stripeApi: { id: 'qtmzPq7nRsOF9MAW', name: 'Stripe read-only' } },
+      onError: 'continueErrorOutput',
+      position,
+    },
+    output: [{ object: 'checkout.session', id: 'cs_test_a1' }],
+  });
+const fetchSession1 = fetchSession('Fetch Session (try 1)', [1540, -380]);
+const fetchSession2 = fetchSession('Fetch Session (try 2)', [2200, -380]);
+const fetchSession3 = fetchSession('Fetch Session (try 3)', [2860, -380]);
+
+const retryableText = expr(
+  "{{ /too many requests|retry after|internal server error|bad gateway|service unavailable|gateway time-?out|timed? ?out|econn|enotfound|eai_again|socket hang up|\\b(429|5\\d\\d)\\b/i.test(String($json.error?.message ?? $json.error ?? '')) }}",
+);
+const retryableStripe = (name: string, position: [number, number]) =>
+  ifElse({
+    version: 2.4,
+    config: {
+      name,
+      parameters: {
+        conditions: {
+          options: { caseSensitive: true, leftValue: '', typeValidation: 'loose', version: 2 },
+          conditions: [{ leftValue: retryableText, rightValue: '', operator: { type: 'boolean', operation: 'true', singleValue: true } }],
+          combinator: 'and',
+        },
+      },
+      position,
+    },
+  });
+const retryableS1 = retryableStripe('Retryable? (S1)', [1760, -260]);
+const retryableS2 = retryableStripe('Retryable? (S2)', [2420, -260]);
+
+const backoffS1 = node({
+  type: 'n8n-nodes-base.wait',
+  version: 1.1,
+  config: { name: 'Backoff S 2s', parameters: { resume: 'timeInterval', amount: 2, unit: 'seconds' }, position: [1980, -380] },
+  output: [{}],
+});
+const backoffS2 = node({
+  type: 'n8n-nodes-base.wait',
+  version: 1.1,
+  config: { name: 'Backoff S 4s', parameters: { resume: 'timeInterval', amount: 4, unit: 'seconds' }, position: [2640, -380] },
+  output: [{}],
+});
+
+const validateSession = node({
+  type: 'n8n-nodes-base.code',
+  version: 2,
+  config: {
+    name: 'Validate Session',
+    parameters: {
+      mode: 'runOnceForEachItem',
+      language: 'javaScript',
+      jsCode: `// Turns Stripe's answer into the invoice document data, or a clear problem. Nothing is guessed or defaulted.
+const prep = $('Prepare Event').item.json;
+const s = $json;
+const fail = (problem) => ({ json: { problem: String(problem), event_id: prep.event_id } });
+
+if (!s || s.object !== 'checkout.session') return fail('Stripe lookup did not return a checkout session');
+if (s.id !== prep.session_id) return fail('Stripe lookup returned a different checkout session');
+if (s.payment_status !== 'paid') return fail('Stripe checkout session is not paid (payment_status=' + s.payment_status + ')');
+if (String(s.currency || '').toLowerCase() !== prep.currency) return fail('Stripe session currency differs from the event');
+if (s.amount_total !== prep.amount_minor) return fail('Stripe session amount differs from the event');
+
+const li = s.line_items && Array.isArray(s.line_items.data) ? s.line_items.data : null;
+if (!li || li.length === 0) return fail('Stripe session has no line items');
+if (s.line_items.has_more) return fail('Stripe session has more line items than one page (not supported)');
+const items = [];
+for (const it of li) {
+  const description = typeof it.description === 'string' ? it.description.trim() : '';
+  const unit = it.price && Number.isInteger(it.price.unit_amount) ? it.price.unit_amount : null;
+  if (!description || !Number.isInteger(it.quantity) || it.quantity < 1 || unit === null || !Number.isInteger(it.amount_total)) {
+    return fail('Stripe line item is incomplete (description, quantity, unit amount or amount)');
+  }
+  items.push({ description, quantity: it.quantity, unit_amount: unit, amount_total: it.amount_total });
+}
+if (items.reduce((a, i) => a + i.amount_total, 0) !== prep.amount_minor) return fail('Stripe line items do not add up to the event amount');
+
+const pi = s.payment_intent;
+const charge = pi && typeof pi === 'object' ? pi.latest_charge : null;
+const pmd = charge && typeof charge === 'object' ? charge.payment_method_details : null;
+if (!pmd || typeof pmd.type !== 'string' || !pmd.type) return fail('Stripe session has no payment method details on its charge');
+const brands = { visa: 'Visa', mastercard: 'Mastercard', amex: 'American Express', discover: 'Discover', diners: 'Diners Club', jcb: 'JCB', unionpay: 'UnionPay', cartes_bancaires: 'Cartes Bancaires', eftpos_au: 'EFTPOS' };
+const types = { sepa_debit: 'SEPA-Lastschrift', paypal: 'PayPal', link: 'Link', klarna: 'Klarna', ideal: 'iDEAL', sofort: 'Sofort', giropay: 'giropay', bancontact: 'Bancontact', eps: 'EPS', p24: 'Przelewy24', amazon_pay: 'Amazon Pay', revolut_pay: 'Revolut Pay' };
+let method;
+if (pmd.type === 'card') {
+  const brand = pmd.card && pmd.card.brand;
+  if (typeof brand !== 'string' || !brand) return fail('Stripe charge has no card brand');
+  method = 'Karte (' + (brands[brand] || brand) + ')';
+} else {
+  method = types[pmd.type] || pmd.type;
+}
+
+return { json: { problem: '', event_id: prep.event_id, customer_email: prep.customer_email, amount_minor: prep.amount_minor, currency: prep.currency, customer_name: prep.customer_name, payment_method: method, line_items_json: JSON.stringify(items) } };`,
+    },
+    position: [3080, -380],
+  },
+  output: [{ problem: '', event_id: 'evt_1', customer_email: 'a@b.co', amount_minor: 3000, currency: 'eur', customer_name: 'Erika Mustermann', payment_method: 'Karte (Visa)', line_items_json: '[]' }],
+});
+
+const sessionValid = ifElse({
+  version: 2.4,
+  config: {
+    name: 'Session Valid?',
+    parameters: {
+      conditions: {
+        options: { caseSensitive: true, leftValue: '', typeValidation: 'loose', version: 2 },
+        conditions: [{ leftValue: expr('{{ $json.problem }}'), rightValue: '', operator: { type: 'string', operation: 'empty', singleValue: true } }],
+        combinator: 'and',
+      },
+    },
+    position: [3300, -380],
+  },
+});
+
+// ---- Rendering: the Render Invoice sub-workflow builds subject, HTML, text, Telegram text and the PDF from the invoice row ----
+
+const renderInput = node({
+  type: 'n8n-nodes-base.set',
+  version: 3.4,
+  config: {
+    name: 'Render Input',
+    parameters: {
+      mode: 'manual',
+      assignments: {
+        assignments: [
+          { id: '7c2f1a10-0001-4a00-9000-000000000001', name: 'invoice_number', value: expr('{{ $json.invoice_number }}'), type: 'string' },
+          // No PDF (so no Gotenberg call) when the email was already sent: only the Telegram text is needed then.
+          { id: '7c2f1a10-0002-4a00-9000-000000000002', name: 'include_pdf', value: expr("{{ !$('Prepare Event').item.json.email_done }}"), type: 'boolean' },
+        ],
+      },
+      includeOtherFields: false,
+      options: {},
+    },
+    position: [3740, -260],
+  },
+  output: [{ invoice_number: 'INV-2026-000001', include_pdf: true }],
+});
+
+const renderInvoice = node({
+  type: 'n8n-nodes-base.executeWorkflow',
+  version: 1.4,
+  config: {
+    name: 'Render Invoice',
+    parameters: { source: 'database', workflowId: { __rl: true, mode: 'id', value: '3dvdSRSD6ObBVsxy' }, mode: 'each', options: {} },
+    onError: 'continueErrorOutput',
+    position: [3960, -260],
+  },
+  output: [{ problem: '', subject: 's', html: 'h', text: 't', telegram_text: 'tg' }],
+});
+
+const renderOk = ifElse({
+  version: 2.4,
+  config: {
+    name: 'Render OK?',
+    parameters: {
+      conditions: {
+        options: { caseSensitive: true, leftValue: '', typeValidation: 'loose', version: 2 },
+        conditions: [{ leftValue: expr("{{ $json.problem === '' }}"), rightValue: '', operator: { type: 'boolean', operation: 'true', singleValue: true } }],
+        combinator: 'and',
+      },
+    },
+    position: [4180, -260],
+  },
+});
 
 const failure = describeFailure.to(markFailed);
 
@@ -494,6 +733,37 @@ const telegramGate = telegramAlreadySent
       .to(recordTelegram.onError(describeFailure).to(markDone)),
   );
 
+const emailGate = emailAlreadySent
+  .onTrue(telegramGate)
+  .onFalse(sendEmail.onError(describeFailure).to(recordEmail.onError(describeFailure).to(telegramAlreadySent)));
+
+const renderStage = renderInput.to(
+  renderInvoice.onError(describeFailure).to(renderOk.onTrue(emailGate).onFalse(describeFailure)),
+);
+
+// Three tries at the Stripe lookup (2 s, then 4 s backoff, only for 429/5xx/network-looking errors), then validate, store, render.
+const sessionLookup = fetchSession1
+  .onError(
+    retryableS1
+      .onTrue(
+        backoffS1.to(
+          fetchSession2
+            .onError(
+              retryableS2
+                .onTrue(backoffS2.to(fetchSession3.onError(describeFailure).to(validateSession)))
+                .onFalse(describeFailure),
+            )
+            .to(validateSession),
+        ),
+      )
+      .onFalse(describeFailure),
+  )
+  .to(
+    validateSession.to(
+      sessionValid.onTrue(createInvoice.onError(describeFailure).to(renderStage)).onFalse(describeFailure),
+    ),
+  );
+
 export default workflow('stripe-processor', 'Stripe Processor')
   .add(everyMinute)
   .to(releaseStuck)
@@ -502,19 +772,7 @@ export default workflow('stripe-processor', 'Stripe Processor')
     claimedEvent.onTrue(
       prepareEvent.to(
         eventValid
-          .onTrue(
-            createInvoice
-              .onError(describeFailure)
-              .to(
-                emailAlreadySent
-                  .onTrue(telegramGate)
-                  .onFalse(
-                    sendEmail
-                      .onError(describeFailure)
-                      .to(recordEmail.onError(describeFailure).to(telegramAlreadySent)),
-                  ),
-              ),
-          )
+          .onTrue(findInvoice.to(invoiceExists.onTrue(renderInput).onFalse(sessionLookup)))
           .onFalse(failure),
       ),
     ),
