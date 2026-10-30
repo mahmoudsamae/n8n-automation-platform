@@ -98,6 +98,8 @@ wsl -d Ubuntu docker exec postgres psql -U automation -d automation -c "select e
 - PowerShell 5.1 prepends a UTF-8 BOM when piping text to `wsl`. psql tolerates it, `sh`/`bash` do not. Send scripts as base64 and decode in WSL
   (`wsl -d Ubuntu bash -c "echo <b64> | base64 -d | bash"`); see `scripts\restore-check.ps1`. Also, `wsl <cmd>` runs through an outer shell, so `$VAR` and quotes in the command are expanded/split before bash sees them.
 - `docker compose up -d` re-reads `~/n8n/.env`; `restart` does not. Recreating n8n drops the n8n MCP connection for a few seconds.
+- Postgres auth tests: the official image's pg_hba TRUSTS `local`, `127.0.0.1` and `::1` inside the `postgres` container, so any password is accepted there (and by every `docker exec postgres psql`).
+  Test password auth from another container: `docker exec -e PGPASSWORD postgres-backup psql -h postgres -U automation -d automation -tAc "select 1"` (export the value from `.env` inside a script, never type it).
 - `seed-test-event.ps1`: a seeded row has no `claimed_at` unless you pass `-ClaimedMinutesAgo`; a `processing` row defaults to claimed now.
 
 ## Rules

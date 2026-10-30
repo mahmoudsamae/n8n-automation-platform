@@ -104,15 +104,38 @@ Never paste a secret into chat, a ticket or a commit. Edit `~/n8n/.env` in WSL, 
 3. Verify: `stripe trigger checkout.session.completed` is stored; a request with a fake signature gets 400 (`scripts\e2e.ps1` checks both).
 Until step 2 finishes, every event gets 400. Stripe retries those later.
 
-**`POSTGRES_PASSWORD`** (the trap: this variable only sets the password when the data volume is created, so changing `.env` alone changes nothing in the database)
-1. Change it in the database first: `ALTER USER automation PASSWORD '<new>';` (psql inside the container, typed interactively so it stays out of shell history).
-2. Put the same value into `~/n8n/.env`.
-3. Update the n8n credential `Postgres automation` in the n8n UI (Credentials -> Postgres automation -> password -> Save).
-4. `docker compose up -d`: this recreates `postgres` (its environment changed) and `postgres-backup`. Expect a few seconds of downtime and possibly one throttled crash alert.
-5. Verify: a new `stripe trigger` event ends `done`; `docker restart postgres-backup` writes a new dump; the OLD password is refused over TCP:
-   `docker exec postgres sh -c "PGPASSWORD=<old> psql -h 127.0.0.1 -U automation -d automation -c 'select 1'"` must fail.
-The password lives in three places that must change together: the database, `.env` (read by `postgres-backup`), and the n8n credential.
-Scripts that use `docker exec postgres psql` connect over the local socket and are unaffected.
+**`POSTGRES_PASSWORD`** (the trap: this variable only sets the password when the data volume is created, so changing `.env` alone changes nothing in the database).
+Rehearsed on 2026-10-30; steps 1-7 are what was done. The new value never appears on screen, in chat, on a command line or in shell history.
+1. **Fresh backup first**, so you can go back: `docker restart postgres-backup`, wait for `backup ok` in `docker logs postgres-backup`.
+2. **Generate the new password into a temp file** in WSL that only you can read (mode 600).
+3. **`ALTER USER automation PASSWORD :'pw';`** through a psql *variable* (`-v pw=...` filled from the temp file, the SQL sent on stdin; `-c` does not expand variables). The password is then neither in the SQL text nor in history.
+   From this moment n8n's old credential is wrong: the downtime window starts.
+4. **Update `POSTGRES_PASSWORD` in `~/n8n/.env`** with `sed`, editing the line in place (never `echo` it).
+5. **Update the n8n credential `Postgres automation`**: copy the value from the temp file to the clipboard with `clip.exe`, paste it into the credential, press Test (it must succeed), Save. The window ends here;
+   in the rehearsal 3 executions failed (Processor 2, Monitor 1) in about 2 minutes, the Error Handler alerted once per (workflow, node), and every run since succeeded.
+6. **`docker compose up -d postgres-backup`.** This also recreates `postgres`, because `POSTGRES_PASSWORD` is in its environment too. The data stays in the volume and the `ALTER USER` password persists.
+   Postgres and the backup container start together, so the first dump can fail with "the database system is starting up"; the backup container retries by itself after 5 minutes (it did).
+7. **Delete the temp file** with `shred -u`.
+8. **Verify, without printing a secret** (all done in the rehearsal):
+   - `scripts\e2e.ps1` passes. It pushes a real `stripe trigger` event through n8n's credential to `done`.
+   - `scripts\restore-check.ps1 -Fresh` passes: `postgres-backup` dumped over TCP with the new password and the dump restored with matching counts.
+   - `.env`, the `postgres` container and the `postgres-backup` container hold the same value. Compare inside one WSL script and print only yes/no.
+   - Over TCP **from another container** the new password is accepted and a wrong one is refused. Export the password from `.env` inside the script, never type it:
+     `docker exec -e PGPASSWORD postgres-backup psql -h postgres -U automation -d automation -tAc "select 1"` (accepted), and the same with `PGPASSWORD=wrong` gives `FATAL: password authentication failed`.
+   - **Do not test over loopback inside the `postgres` container.** pg_hba has `trust` for `local`, `127.0.0.1` and `::1` (lines 117-121), so any password is accepted there; measured: a wrong password was accepted.
+     Only connections from other containers (and the published port) go through `scram-sha-256`.
+   - The OLD password cannot be tested: it no longer exists anywhere. Its rejection follows from step 3 (`ALTER USER` replaces the password) and was not tested with the old value.
+The password lives in three places that must change together: the database, `.env` (read by `postgres-backup`), and the n8n credential. The scripts that run `docker exec postgres psql` use the local socket (trust),
+so e2e does not notice a wrong password in `.env`; only `postgres-backup` uses that value, and a wrong one shows up as `backup FAILED` in its log.
+
+**Recommendation for a real client: two login roles, no downtime window.** The procedure above has a window (steps 3-5) in which a consumer holds a rejected password. A client should not accept that. Not built or rehearsed here.
+- Keep `automation` as the admin role: migrations and the `docker exec ... psql` scripts, never used by n8n over TCP.
+- Create a NOLOGIN group role `automation_app` with only what the pipeline needs (SELECT, INSERT, UPDATE on the tables, USAGE on the sequences; no DELETE, in line with `ON DELETE RESTRICT`),
+  and two LOGIN roles `automation_a` and `automation_b`, both members of it.
+- n8n and `postgres-backup` use the active role, say A. To rotate: set a new password on the idle role B, switch `.env` and the n8n credential to B, recreate the backup container, verify as in step 8.
+  A's old password stays valid the whole time, so nothing is rejected at any moment, nothing has to be done in a hurry, and rollback is pointing back at A.
+- Only after everything runs on B, give A a new random password. The next rotation flips back to A.
+- Bonus: n8n no longer connects as a superuser.
 
 **Telegram bot token**: revoke and re-issue it with BotFather, then update the n8n credential `Telegram alerts` (it is not in `.env`).
 Verify with a seeded dead test event (`scripts\seed-test-event.ps1 -Id evt_test_x -Status failed -Attempts 5`), then delete that row.
@@ -120,7 +143,7 @@ Verify with a seeded dead test event (`scripts\seed-test-event.ps1 -Id evt_test_
 **`HEARTBEAT_URL`**: the URL is the only credential. Create a replacement check in Healthchecks.io with the same period and grace,
 put its URL into `.env`, `docker compose up -d n8n`, confirm the new check turns green, then delete the old check.
 
-Only the Postgres rotation is rehearsed in this project; the other three are written from how the system is wired and not rehearsed.
+Rehearsed in this project: the Postgres password and `HEARTBEAT_URL`. The Telegram token and `STRIPE_WEBHOOK_SECRET` steps are written from how the system is wired and not rehearsed.
 
 ## 8. Rebuild n8n from the `.sdk.ts` files
 
