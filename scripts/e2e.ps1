@@ -119,8 +119,7 @@ Write-Step 'Postgres backup authenticates over TCP and its last log line is not 
 
 # M5: the n8n container must have the alert addresses and the heartbeat URL (presence only, values are never printed).
 $envScript = 'for k in HEARTBEAT_URL ALERT_EMAIL_TO ALERT_EMAIL_FROM; do v=$(docker exec n8n printenv $k); if [ -n "$v" ]; then echo "$k=set"; else echo "$k=EMPTY"; fi; done'
-$envOut = @(wsl -d Ubuntu bash -c ("echo " + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($envScript)) + " | base64 -d | bash")) |
-    ForEach-Object { "$_".Trim() } | Where-Object { $_ }
+$envOut = @(& "$PSScriptRoot\wsl-sh.ps1" -Script $envScript) | ForEach-Object { "$_".Trim() } | Where-Object { $_ }
 foreach ($k in 'HEARTBEAT_URL', 'ALERT_EMAIL_TO', 'ALERT_EMAIL_FROM') {
     Write-Step "n8n container has $k" ($envOut -contains "$k=set")
 }

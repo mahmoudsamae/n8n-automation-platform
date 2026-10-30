@@ -1,5 +1,16 @@
 {
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "PowerShell|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/scripts/hooks/wsl-quoting-guard.mjs\""
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "mcp__n8n__create_workflow_from_code|mcp__n8n__update_workflow|mcp__n8n__publish_workflow|mcp__n8n__restore_workflow_version",

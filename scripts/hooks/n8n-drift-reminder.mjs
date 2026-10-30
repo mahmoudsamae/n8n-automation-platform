@@ -5,6 +5,9 @@
 const WORKFLOW_FILES = {
   '3j0pWVoxvDY2sdO5': 'stripe-intake.sdk.ts',
   'ylR2t9B0ZAH1cLfq': 'stripe-processor.sdk.ts',
+  'c2NT8k3JGpuS3r6I': 'stripe-error-handler.sdk.ts',
+  'yeSlEcPp87vCJT7D': 'stripe-monitor.sdk.ts',
+  'WO2ebvkZGK5NxzVo': 'stripe-send-alert.sdk.ts',
 };
 
 let raw = '';
