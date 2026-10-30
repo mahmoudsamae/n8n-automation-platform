@@ -1,5 +1,6 @@
 # End-to-end check for the Stripe -> n8n pipeline. Run: powershell -File scripts\e2e.ps1
-# Non-destructive: stops no services, deletes no rows. Never prints stripe listen output (it holds the signing secret).
+# Non-destructive: stops no services and deletes no real data (its only deletes are its own evt_test_e2e_stale_* rows, via clean-test-event.ps1).
+# Never prints stripe listen output (it holds the signing secret).
 $ErrorActionPreference = 'Stop'
 
 $IntakeUrl = 'http://localhost:5678/webhook/stripe-intake'
@@ -238,7 +239,7 @@ limit 1
 
     # ---- 7. bad signature ----
     Write-Host "`n== 7. Fake-signed request ==" -ForegroundColor Cyan
-    $ts = [int][double]::Parse((Get-Date -UFormat %s))
+    $ts = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()   # not Get-Date -UFormat %s: that is the LOCAL epoch in Windows PowerShell 5.1
     $code = $null
     try {
         $r = Invoke-WebRequest -Uri $IntakeUrl -Method Post -UseBasicParsing -ContentType 'application/json' `
@@ -250,6 +251,12 @@ limit 1
     Write-Step 'fake signature rejected with 400' ($code -eq 400) "got $code"
     $leak = [int](Invoke-Sql "select count(*) from stripe_events where event_id = 'evt_fake_e2e'")
     Write-Step 'fake event was not stored' ($leak -eq 0) "found $leak"
+
+    # ---- 7b. stale timestamp ----
+    Write-Host "`n== 7b. Validly signed request with a stale timestamp ==" -ForegroundColor Cyan
+    # Its own script so each failure path can be provoked on its own. Stores and removes two evt_test_e2e_stale_* rows.
+    & "$PSScriptRoot\check-stale-timestamp.ps1"
+    Write-Step 'stale timestamp rejected (400, not stored) and the fresh signed control accepted' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
 }
 catch {
     Write-Step 'script aborted' $false $_.Exception.Message

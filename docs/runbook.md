@@ -26,7 +26,7 @@ powershell -File scripts\e2e.ps1
 ```
 
 It checks containers, migration 005, the `errorWorkflow` settings, a fresh Postgres dump, that the backup container can log in over TCP and is not failing, the three env vars, then pushes one real test
-event through the whole pipeline. It creates one `e2e=true` event and deletes nothing. For a read-only look: `scripts\check-error-workflows.ps1`.
+event through the whole pipeline and ends with a stale-timestamp check. It creates one `e2e=true` event and deletes no real data (its only deletes are its own two `evt_test_e2e_stale_*` rows). For a read-only look: `scripts\check-error-workflows.ps1`.
 
 ## 3. What each alert means
 
