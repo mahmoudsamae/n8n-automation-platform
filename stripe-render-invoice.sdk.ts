@@ -78,64 +78,113 @@ for (const it of items) {
   if (!ok) return fail('Render Invoice: invoice ' + requested + ' has an invalid line item');
   sum += it.amount_total;
 }
-if (sum !== Number(inv.amount_cents)) return fail('Render Invoice: line items of ' + requested + ' do not add up to the invoice amount');
+const gross = Number(inv.amount_cents);
+if (sum !== gross) return fail('Render Invoice: line items of ' + requested + ' do not add up to the invoice amount');
+
+// Stripe's total is gross. net = round(gross / 1.19) in integer arithmetic (no float rounding surprises), VAT = gross - net,
+// so net + VAT is always exactly the total.
+const net = Math.floor((200 * gross + 119) / 238);
+const vat = gross - net;
 
 // Customer-controlled text (name, email, product) is escaped everywhere it is shown.
 const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 const name = String(inv.customer_name).trim();
 const firstName = name.split(/\\s+/)[0];
 const date = new Intl.DateTimeFormat('de-DE', { timeZone: 'Europe/Berlin', day: '2-digit', month: '2-digit', year: 'numeric' }).format(new Date(inv.created_at));
-const total = money(inv.amount_cents);
+const total = money(gross);
+const netText = money(net);
+const vatText = money(vat);
 const product = items.map((it) => it.description.trim()).join(', ').slice(0, 150);
 const number = inv.invoice_number;
+const method = String(inv.payment_method);
 
-const td = 'padding:10px 8px;border-bottom:1px solid #e4e7ec;';
-const th = 'padding:8px;background:#f5f7fa;border-bottom:2px solid #1d3557;color:#1d3557;font-size:12px;text-transform:uppercase;letter-spacing:0.04em;';
+// ---- identity: original inline SVG monogram (no remote assets, so the PDF's CSP stays strict) ----
+const logo = '<svg xmlns="http://www.w3.org/2000/svg" width="44" height="44" viewBox="0 0 48 48" role="img" aria-label="Musterwerk">'
+  + '<rect width="48" height="48" rx="11" fill="#1e3a5f"/>'
+  + '<path d="M13 35V13l11 14 11-14v22" fill="none" stroke="#5dcaa5" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const badge = '<span style="display:inline-block;padding:4px 14px;border-radius:999px;background:#dff5ea;border:1px solid #9fd8bd;color:#14633f;font-size:12px;font-weight:bold;letter-spacing:0.04em">Bezahlt</span>';
+
+const cell = 'padding:11px 8px;border-bottom:1px solid #e4e7ec;';
+const head = 'padding:9px 8px;background:#1e3a5f;color:#ffffff;font-size:11px;text-transform:uppercase;letter-spacing:0.05em;';
 const rows = items.map((it, i) =>
-  '<tr><td style="' + td + 'color:#667085;width:28px">' + (i + 1) + '</td><td style="' + td + '">' + esc(it.description.trim()) + '</td>'
-  + '<td style="' + td + 'text-align:right">' + it.quantity + '</td><td style="' + td + 'text-align:right;white-space:nowrap">' + esc(money(it.unit_amount)) + '</td>'
-  + '<td style="' + td + 'text-align:right;white-space:nowrap">' + esc(money(it.amount_total)) + '</td></tr>').join('');
+  '<tr><td style="' + cell + 'color:#667085;width:28px">' + (i + 1) + '</td><td style="' + cell + '">' + esc(it.description.trim()) + '</td>'
+  + '<td style="' + cell + 'text-align:right">' + it.quantity + '</td><td style="' + cell + 'text-align:right;white-space:nowrap">' + esc(money(it.unit_amount)) + '</td>'
+  + '<td style="' + cell + 'text-align:right;white-space:nowrap">' + esc(money(it.amount_total)) + '</td></tr>').join('');
 
-const body =
-  '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:640px;margin:0 auto;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5;color:#1a1a1a">'
-  + '<tr><td style="padding:0 0 18px;border-bottom:3px solid #1d3557"><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
-  + '<td style="vertical-align:top"><div style="font-size:24px;font-weight:bold;color:#1d3557">Musterwerk</div><div style="color:#667085;font-size:12px">Musterstra&szlig;e 1 &middot; 12345 Musterstadt</div></td>'
-  + '<td style="vertical-align:top;text-align:right"><div style="font-size:20px;font-weight:bold">Rechnung</div><div style="color:#667085;font-size:12px">Nr. ' + esc(number) + '<br>Datum: ' + esc(date) + '</div></td>'
-  + '</tr></table></td></tr>'
-  + '<tr><td style="padding:22px 0 6px"><div style="color:#667085;font-size:12px;text-transform:uppercase;letter-spacing:0.04em">Rechnung an</div>'
-  + '<div style="font-weight:bold">' + esc(name) + '</div><div>' + esc(inv.customer_email) + '</div></td></tr>'
-  + '<tr><td style="padding:14px 0">Guten Tag ' + esc(name) + ',<br>vielen Dank f&uuml;r Ihre Zahlung. Hier ist Ihre Rechnung.</td></tr>'
-  + '<tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse">'
-  + '<tr><th style="' + th + 'text-align:left;width:28px">Pos.</th><th style="' + th + 'text-align:left">Beschreibung</th><th style="' + th + 'text-align:right">Menge</th>'
-  + '<th style="' + th + 'text-align:right">Einzelpreis</th><th style="' + th + 'text-align:right">Gesamt</th></tr>' + rows
-  + '<tr><td colspan="4" style="padding:12px 8px;text-align:right;font-weight:bold">Gesamtbetrag</td><td style="padding:12px 8px;text-align:right;font-weight:bold;font-size:16px;white-space:nowrap;color:#1d3557">' + esc(total) + '</td></tr>'
-  + '</table></td></tr>'
-  + '<tr><td style="padding:16px 0 0">Zahlungsart: ' + esc(inv.payment_method) + '<br>Status: bezahlt</td></tr>'
-  + '<tr><td style="padding:34px 0 0;border-top:1px solid #e4e7ec;margin-top:24px;color:#667085;font-size:11px">Portfolio-Demo aus der Stripe-Sandbox. Keine Rechnung im Sinne von &sect; 14 UStG.<br>Referenz: ' + esc(inv.event_id) + '</td></tr>'
-  + '</table>';
+const lab = 'color:#667085;font-size:12px;padding:2px 16px 2px 0;white-space:nowrap;';
+const val = 'font-size:13px;padding:2px 0;white-space:nowrap;';
+const info = '<table role="presentation" align="right" cellpadding="0" cellspacing="0">'
+  + '<tr><td style="' + lab + '">Rechnungs-Nr.</td><td style="' + val + 'font-weight:bold">' + esc(number) + '</td></tr>'
+  + '<tr><td style="' + lab + '">Rechnungsdatum</td><td style="' + val + '">' + esc(date) + '</td></tr>'
+  + '<tr><td style="' + lab + '">Leistungsdatum</td><td style="' + val + '">' + esc(date) + '</td></tr>'
+  + '<tr><td style="' + lab + '">Zahlungsart</td><td style="' + val + '">' + esc(method) + '</td></tr></table>';
 
-const css = 'body{margin:0;padding:0}@page{size:A4;margin:16mm}';
-const htmlEmail = '<!doctype html><html lang="de"><head><meta charset="utf-8"><title>Rechnung ' + esc(number) + '</title></head><body style="margin:0;padding:16px;background:#ffffff">' + body + '</body></html>';
+const tl = 'padding:5px 0;font-size:13px;';
+const tv = 'padding:5px 0;font-size:13px;text-align:right;white-space:nowrap;';
+const totals = '<table role="presentation" align="right" cellpadding="0" cellspacing="0" style="width:56%;margin-top:6px">'
+  + '<tr><td style="' + tl + '">Nettobetrag</td><td style="' + tv + '">' + esc(netText) + '</td></tr>'
+  + '<tr><td style="' + tl + '">zzgl. 19 % USt.</td><td style="' + tv + '">' + esc(vatText) + '</td></tr>'
+  + '<tr><td style="padding:9px 0 0;border-top:2px solid #1e3a5f;font-weight:bold;font-size:15px">Gesamtbetrag</td>'
+  + '<td style="padding:9px 0 0;border-top:2px solid #1e3a5f;text-align:right;white-space:nowrap;font-weight:bold;font-size:15px;color:#1e3a5f">' + esc(total) + '</td></tr></table>';
+
+const main =
+  '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-bottom:3px solid #1e3a5f"><tr>'
+  + '<td style="vertical-align:middle;width:56px;padding-bottom:14px">' + logo + '</td>'
+  + '<td style="vertical-align:middle;padding:0 0 14px 12px"><div style="font-size:22px;font-weight:bold;color:#1e3a5f;line-height:1.15">Musterwerk</div>'
+  + '<div style="font-size:12px;color:#667085">Workshops f&uuml;r Automatisierung</div></td>'
+  + '<td style="vertical-align:middle;text-align:right;padding-bottom:14px">' + badge + '</td></tr></table>'
+  + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:26px"><tr>'
+  + '<td style="vertical-align:top;width:52%">'
+  + '<div style="font-size:10px;color:#667085;border-bottom:1px solid #c9ced6;padding-bottom:3px;margin-bottom:8px;display:inline-block">Musterwerk &middot; Musterstra&szlig;e 1 &middot; 12345 Musterstadt</div>'
+  + '<div style="font-weight:bold;font-size:14px">' + esc(name) + '</div><div style="font-size:13px">' + esc(inv.customer_email) + '</div></td>'
+  + '<td style="vertical-align:top">' + info + '</td></tr></table>'
+  + '<div style="font-size:24px;font-weight:bold;color:#1e3a5f;margin:30px 0 8px">Rechnung</div>'
+  + '<div style="margin-bottom:16px">Guten Tag ' + esc(name) + ',<br>vielen Dank f&uuml;r Ihre Zahlung. Hier ist Ihre Rechnung.</div>'
+  + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse">'
+  + '<tr style="background:#1e3a5f"><th style="' + head + 'text-align:left;width:28px">Pos.</th><th style="' + head + 'text-align:left">Beschreibung</th><th style="' + head + 'text-align:right">Menge</th>'
+  + '<th style="' + head + 'text-align:right">Einzelpreis</th><th style="' + head + 'text-align:right">Gesamt</th></tr>' + rows + '</table>'
+  + totals + '<div style="clear:both"></div>'
+  + '<div style="margin-top:26px;padding:12px 14px;background:#f2faf6;border-left:4px solid #5dcaa5;font-size:13px">Der Betrag wurde am ' + esc(date) + ' per ' + esc(method)
+  + ' beglichen. Es ist nichts mehr zu zahlen.</div>';
+
+const fcol = 'vertical-align:top;width:33%;padding:12px 12px 0 0;font-size:11px;line-height:1.55;color:#667085;';
+const fhead = 'display:block;color:#1e3a5f;font-weight:bold;font-size:10px;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:2px;';
+const foot =
+  '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-top:2px solid #1e3a5f;margin-top:34px"><tr>'
+  + '<td style="' + fcol + '"><span style="' + fhead + '">Anschrift</span>Musterwerk<br>Musterstra&szlig;e 1<br>12345 Musterstadt</td>'
+  + '<td style="' + fcol + '"><span style="' + fhead + '">Kontakt</span>rechnung@musterwerk.example<br>musterwerk.example</td>'
+  + '<td style="' + fcol + '"><span style="' + fhead + '">Hinweis</span>Portfolio-Demo, Stripe-Sandbox.<br>Keine Rechnung i. S. d. &sect; 14 UStG.</td></tr>'
+  + '<tr><td colspan="3" style="padding:10px 0 0;font-size:10px;color:#98a2b3">Referenz: ' + esc(inv.event_id) + '</td></tr></table>';
+
+const wrap = (inner) => '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:640px;margin:0 auto;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5;color:#1a1a1a"><tr><td>' + inner + '</td></tr></table>';
+const htmlEmail = '<!doctype html><html lang="de"><head><meta charset="utf-8"><title>Rechnung ' + esc(number) + '</title></head><body style="margin:0;padding:16px;background:#ffffff">' + wrap(main + foot) + '</body></html>';
 // The PDF page may not load anything: the CSP blocks every request, so injected markup cannot reach the Docker network.
-const htmlPdf = '<!doctype html><html lang="de"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src &#39;none&#39;; style-src &#39;unsafe-inline&#39;; img-src data:"><title>Rechnung ' + esc(number) + '</title><style>' + css + '</style></head><body>' + body + '</body></html>';
+// The footer sits at the bottom of the A4 page (flex column) and simply follows the content if a long invoice needs a second page.
+const css = '@page{size:A4;margin:14mm 16mm}body{margin:0;padding:0}.page{display:flex;flex-direction:column;min-height:269mm}.page>div{width:100%}.foot{margin-top:auto}';
+const htmlPdf = '<!doctype html><html lang="de"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src &#39;none&#39;; style-src &#39;unsafe-inline&#39;; img-src data:"><title>Rechnung ' + esc(number) + '</title><style>' + css + '</style></head><body><div class="page"><div>' + wrap(main) + '</div><div class="foot">' + wrap(foot) + '</div></div></body></html>';
 
 const lines = items.map((it, i) => (i + 1) + '. ' + it.description.trim() + ' | ' + it.quantity + ' x ' + money(it.unit_amount) + ' = ' + money(it.amount_total));
 const text = [
-  'Musterwerk',
+  'Musterwerk - Workshops für Automatisierung',
   '',
   'Guten Tag ' + name + ',',
   'vielen Dank für Ihre Zahlung. Hier ist Ihre Rechnung.',
   '',
-  'Rechnung Nr. ' + number,
-  'Datum: ' + date,
+  'Rechnung Nr. ' + number + ' (BEZAHLT)',
+  'Rechnungsdatum: ' + date,
+  'Leistungsdatum: ' + date,
+  'Zahlungsart: ' + method,
   '',
   ...lines,
   '',
+  'Nettobetrag: ' + netText,
+  'zzgl. 19 % USt.: ' + vatText,
   'Gesamtbetrag: ' + total,
-  'Zahlungsart: ' + inv.payment_method,
-  'Status: bezahlt',
   '',
-  'Portfolio-Demo aus der Stripe-Sandbox. Keine Rechnung im Sinne von § 14 UStG.',
+  'Der Betrag wurde am ' + date + ' per ' + method + ' beglichen. Es ist nichts mehr zu zahlen.',
+  '',
+  'Musterwerk, Musterstraße 1, 12345 Musterstadt | rechnung@musterwerk.example',
+  'Portfolio-Demo, Stripe-Sandbox. Keine Rechnung i. S. d. § 14 UStG.',
   'Referenz: ' + inv.event_id,
 ].join('\\n');
 
@@ -149,6 +198,7 @@ const telegramText = [
 
 const json = {
   problem: '', invoice_number: number, event_id: inv.event_id, include_pdf: includePdf,
+  net_cents: net, vat_cents: vat,
   subject: 'Ihre Rechnung ' + number, html: htmlEmail, text, telegram_text: telegramText, pdf_name: 'Rechnung-' + number + '.pdf',
 };
 if (!includePdf) return { json };
