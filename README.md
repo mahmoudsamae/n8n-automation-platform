@@ -1,131 +1,154 @@
-# Stripe Payment Automation with n8n
+# Stripe payments to invoices with n8n and PostgreSQL
 
-The goal: no payment is lost, none is invoiced twice, and every failure path is tested by breaking the system on purpose.
+A pipeline of five n8n workflows that turns Stripe payment events into invoices plus email and Telegram notifications. It stores every event before acknowledging it, creates one invoice per paid event, and makes failures visible: dead or stuck events raise alerts, and a failed event can be replayed with an audit trail.
 
-This portfolio project turns Stripe payment events into invoices and email/Telegram notifications using n8n and PostgreSQL. It separates durable webhook intake from asynchronous invoicing, delivery, and recovery. [PLAN.md](PLAN.md#plan) records M1–M4 complete and **35/35 e2e checks passed** for M4. The failure table shows the checks and deliberate outages behind that result, alongside the remaining test gaps.
+**Stripe sandbox only.** It runs on my machine in Docker, email goes to a local Mailpit inbox, and nothing is live. A real deployment would need the changes in [`docs/live-mode-checklist.md`](docs/live-mode-checklist.md), which I wrote but never executed.
 
-## The problem
+What I can show, each with the output behind it in [`docs/evidence.md`](docs/evidence.md):
 
-Payment events can arrive more than once, and invoicing must survive email outages, retries, and interrupted processing. This pipeline stores events before acknowledging them, creates one invoice per paid event, and tracks notification delivery separately. Failed or stuck events stay visible and can be replayed without deleting invoices or completed side-effect records. See the [invoice migration](migrations/004_invoices.sql), [M3](PLAN.md#m3-stripe-processor), and [M4](PLAN.md#m4-failure-visibility).
+- **No double invoice or message.** Resending a Stripe event, or running the Processor again on the same event, leaves exactly 1 invoice, 1 email and 1 Telegram message. [Checked on every e2e run.](docs/evidence.md#duplicate-event-200-duplicate-1-row)
+- **No 200 for an event that was not stored.** With Postgres stopped, Intake answered 500 to all 7 events of a Stripe CLI trigger. After the restart a resend stored exactly 1 row and it ended `done`. [Recorded output.](docs/evidence.md#database-down-500-then-the-resend-stores-1-row)
+- **Failures reach a human.** Dead and stuck events raise one alert (Telegram and email) and can be replayed with a reason and an audit row; replay never touches invoices. [Recorded.](docs/evidence.md#alerts-and-replay)
+- **Silence is detected.** An outside heartbeat emails me after about 15 minutes without a ping, and a Postgres backup restores into a throwaway container with matching row counts. [Recorded.](docs/evidence.md#hardening)
+- **42 end-to-end checks** run through one script after every change (by hand; there is no CI): [`scripts/e2e.ps1`](scripts/e2e.ps1).
 
-## Architecture
+What I could not prove is listed just as plainly: [known limits](#known-limits) and [not proven](docs/evidence.md#not-proven).
+
+```mermaid
+flowchart LR
+    S["Stripe"] --> I["Intake: verify signature, store"]
+    I -->|"bad signature or older than 5 min"| R400["400"]
+    I -->|"stored, or duplicate"| R200["200"]
+    I -->|"insert failed"| R500["500: Stripe retries"]
+    I --> DB[("stripe_events")]
+    DB --> P["Processor: every minute"]
+    P --> INV[("invoice")]
+    P --> M["email via Mailpit"]
+    P --> T["Telegram"]
+```
+
+## How it works
+
+1. **Accept and store.** Intake checks the Stripe signature (HMAC-SHA256, constant-time compare) and rejects timestamps older than 5 minutes. It classifies the event and inserts it idempotently: a paid `checkout.session.completed` or an `async_payment_succeeded` becomes `pending`, everything else `ignored`. It answers 200, 200 duplicate, 400, or 500 if the insert failed. The response is sent only after the insert, so Stripe's own retries cover an outage.
+2. **Claim atomically.** Every minute the Processor releases rows stuck in `processing` for more than 10 minutes, then claims up to 10 eligible rows (`pending`, or `failed` with fewer than 5 attempts) in one statement with `FOR UPDATE SKIP LOCKED`.
+3. **Invoice first.** Each valid paid event gets one invoice before any notification: `event_id` is `UNIQUE`, and `INV-<year>-<6 digits>` comes from a PostgreSQL sequence. Amounts stay in Stripe's smallest unit (JPY 1500 is 1500) and are shown with `Intl.NumberFormat('de-DE')`.
+4. **Deliver once per kind.** For `email` and `telegram` the Processor checks `side_effects(event_id, kind)`, sends if there is no row, then inserts one. Telegram gets up to 3 tries (2 s, then 4 s) for 429, 5xx and network errors only. Missing or invalid customer email, amount or currency marks the event `failed` with a clear `last_error`; there is no fallback address.
+5. **Watch.** A Monitor workflow looks every 5 minutes for exhausted retries, stale pending, stuck failed and stuck processing events. Crashed workflows go through an Error Handler with a 15-minute throttle per (workflow, node). Both use one shared Send Alert workflow.
+6. **Replay.** `scripts/replay.ps1` accepts only `failed` events, resets them in one transaction and writes an `event_replays` row with the reason.
+
+Details and criteria: [M3](PLAN.md#m3-stripe-processor), [M4](PLAN.md#m4-failure-visibility), [M5](PLAN.md#m5-hardening). Operating it: [`docs/runbook.md`](docs/runbook.md).
+
+<details>
+<summary>The full picture, including alerting and recovery</summary>
 
 ```mermaid
 flowchart TD
-    Stripe[Stripe events] --> Intake[Intake: verify, classify, insert]
-    Intake -->|Bad signature or stale timestamp| Bad[HTTP 400]
-    Intake -->|Insert failed| Retry[HTTP 500: Stripe can retry]
-    Intake -->|New event stored| OK[HTTP 200: received]
-    Intake -->|Duplicate event| Duplicate[HTTP 200: duplicate]
-    Intake --> DB[(PostgreSQL: stripe_events)]
-
-    Tick[Every minute] --> Processor[Processor: claim at most 10 events]
+    Stripe[Stripe events] --> Intake["Intake: verify, classify, insert"]
+    Intake -->|"bad signature or stale timestamp"| Bad["HTTP 400"]
+    Intake -->|"insert failed"| Retry["HTTP 500: Stripe retries"]
+    Intake -->|"new event stored"| OK["HTTP 200"]
+    Intake -->|"duplicate"| Dup["HTTP 200 duplicate"]
+    Intake --> DB[("PostgreSQL: stripe_events")]
+    Tick["every minute"] --> Processor["Processor: claim up to 10"]
     DB --> Processor
-    Processor -->|Create or reuse invoice| Invoices[(invoices: event_id UNIQUE)]
-    Sequence[PostgreSQL sequence: INV-YYYY-NNNNNN] --> Invoices
-    Processor <--> Effects[(side_effects)]
-    Processor --> Email[Mailpit email]
-    Processor --> Telegram[Telegram message]
-    Processor -->|done or failed| DB
-
-    Monitor[Monitor: every 5 minutes] -->|Find dead or stuck events| DB
-    Monitor --> Sender[Shared Send Alert workflow]
-    Intake -. Execution crash .-> Handler[Error Handler: 15-minute throttle]
-    Processor -. Execution crash .-> Handler
-    Monitor -. Execution crash .-> Handler
+    Processor --> Invoices[("invoices: one per event")]
+    Processor <--> Effects[("side_effects")]
+    Processor --> Email["email via Mailpit"]
+    Processor --> Telegram["Telegram message"]
+    Processor -->|"done or failed"| DB
+    Monitor["Monitor: every 5 min"] -->|"dead or stuck events"| DB
+    Monitor --> Sender["Send Alert: Telegram and email"]
+    Intake -. crash .-> Handler["Error Handler: 15 min throttle"]
+    Processor -. crash .-> Handler
+    Monitor -. crash .-> Handler
     Handler --> Sender
-    Sender --> Email
-    Sender --> Telegram
-
-    Replay[Manual replay script] -->|Failed event only: reset and audit| DB
-    Replay --> Audit[(event_replays)]
+    Monitor -->|"ping every 5 min"| HC["Healthchecks.io: emails after about 15 min of silence"]
+    Replay["replay.ps1: failed events only"] --> DB
+    Replay --> Audit[("event_replays")]
+    DB --> Backup["postgres-backup: daily pg_dump"]
 ```
 
-The diagram summarizes the contracts in the [milestone table](PLAN.md#plan), [M3](PLAN.md#m3-stripe-processor), and [M4](PLAN.md#m4-failure-visibility). Retry and alert delivery limits are listed below.
-
-## How the pipeline works
-
-1. **Accept and store.** Intake checks the Stripe signature, classifies the event, and performs an idempotent insert. Its response contract is 200/400/500, including a duplicate response. M2 records a Stripe CLI proof of the database-down 500 path. See the [milestone table](PLAN.md#plan).
-2. **Claim work atomically.** Every minute, the Processor claims up to 10 eligible events, oldest first, using `FOR UPDATE SKIP LOCKED` in one SQL statement. Claiming sets `processing` and increments `attempts`. `done` and `ignored` events are excluded; failed events are eligible only below five attempts. See [M3 acceptance criteria 1–3](PLAN.md#acceptance-criteria).
-3. **Create the invoice first.** Each valid paid event gets one invoice before notifications. PostgreSQL's `invoice_number_seq` generates sequential `INV-YYYY-NNNNNN` numbers; `event_id UNIQUE` and `ON CONFLICT` reuse the existing invoice on retries. The foreign key uses `ON DELETE RESTRICT`. Amounts stay in Stripe's smallest currency unit and are formatted with `Intl.NumberFormat('de-DE')`, including zero-decimal currencies such as JPY, whose amounts are not divided by 100. See [migration 004](migrations/004_invoices.sql), the [Processor](stripe-processor.sdk.ts#L62-L97), and [M4 replay proof](PLAN.md#proof-required-commands-and-output-shown-1).
-4. **Deliver and record.** For each notification kind, the Processor checks `side_effects`, sends if no record exists, then inserts the record. The composite primary key is `(event_id, kind)`. Email and Telegram messages carry the invoice number and formatted amount. Success sets `done` and `processed_at`; failure records `failed` and a short `last_error`, without stopping the rest of the batch. See [M3 criteria 4–8](PLAN.md#acceptance-criteria) and the [Processor](stripe-processor.sdk.ts).
-5. **Recover abandoned work.** Processing rows older than 10 minutes are released. Release and replay refresh `pending_since`, so an old receipt time does not cause a new pending episode to look stale. See [M3 criterion 9](PLAN.md#acceptance-criteria) and [M4 criterion 5](PLAN.md#acceptance-criteria-1).
-6. **Expose failures.** The Monitor runs every five minutes and detects exhausted retries, stale pending events, stuck retryable failures, and stuck processing events. It records `alerted_at` after delivery. Execution crashes use a separate Error Handler with a 15-minute throttle per workflow/node and state outside PostgreSQL. Both use the shared alert sender. See [M4 criteria 1–8 and 12–15](PLAN.md#acceptance-criteria-1).
-7. **Replay with an audit trail.** The PowerShell replay script accepts only failed events. One transaction resets processing state and adds an `event_replays` record with the operator's reason. Existing `side_effects` and `invoices` records remain intact; dry-run mode changes nothing. See [M4 criterion 9](PLAN.md#acceptance-criteria-1).
+</details>
 
 ## Engineering decisions
 
-- **Store first; return 500 on storage failure:** Stripe's retries recover unaccepted events instead of a premature 200 losing them. [M2](PLAN.md#plan)
-- **`timingSafeEqual` plus a five-minute replay window:** compare signatures without a timing-sensitive equality check and reject signed requests older than five minutes. [Intake](stripe-intake.sdk.ts#L47-L62)
-- **Database UNIQUE constraints:** enforce event and invoice uniqueness under concurrency rather than trusting a check-then-insert race. [Event schema](migrations/001_stripe_events.sql), [invoice schema](migrations/004_invoices.sql)
-- **`ON DELETE RESTRICT` for financial records:** block deletion of a payment event while its invoice exists, preventing silent loss of financial history. [Migration 004](migrations/004_invoices.sql)
-- **Single-meaning timestamps:** `pending_since` dates the current pending episode and `claimed_at` dates the processing claim, preventing false stale alerts after recovery. [M4 criteria 5 and 12](PLAN.md#acceptance-criteria-1)
-- **Monitor separate from Processor:** a watchdog can report stalled processing even when the Processor itself is not running. [M4 criterion 4](PLAN.md#acceptance-criteria-1)
+- **Store first, answer 500 if storage fails.** An early 200 would tell Stripe the event arrived and lose it; a 500 makes Stripe retry. [Output](docs/evidence.md#database-down-500-then-the-resend-stores-1-row).
+- **Database constraints, not check-then-insert.** `UNIQUE` on the event and on the invoice's event, plus `ON CONFLICT`, hold under concurrency. See [`migrations/`](migrations/).
+- **`ON DELETE RESTRICT` on financial records.** A payment event cannot be deleted while its invoice exists. An earlier plan said `CASCADE`; I changed it.
+- **Two timestamps with one meaning each.** `pending_since` dates the current pending episode and `claimed_at` dates the processing claim, so a row released after 30 minutes does not look stale. [M4 criteria 4 and 5](PLAN.md#m4-failure-visibility).
+- **The Monitor is a separate workflow.** A Processor that has stopped cannot report that it stopped.
+- **Alerting also fails safely.** The crash throttle keeps its state in n8n's static data, so it works when Postgres is the thing that is down. The Monitor sets `alerted_at` only after delivery, so an undelivered alert is retried.
+- **Every check must be able to fail.** After M5 I made each new check fail on purpose, because three of them could never have failed. Example: the stale-timestamp check has a fresh-timestamp control, and both ways of breaking it were provoked ([how](docs/evidence.md#stale-timestamp-400)).
+- **Secrets stay out of the repo and out of output.** Compose holds `${VAR}` references only; scripts read secrets inside WSL and print yes/no. A hook blocks the unsafe `wsl` quoting forms that once printed a secret.
 
 ## Failure scenarios and evidence
 
-[`scripts/e2e.ps1`](scripts/e2e.ps1) runs on every change as the definition of done. It checks invoice and delivery counts after first delivery, duplicate resend, and an actual Processor re-run, plus fake-signature rejection, replay safety, and migration lint. Deliberate service outages and seeded stuck events exercise the recovery paths documented in [PLAN.md](PLAN.md#m4-failure-visibility). The recorded M4 result is **35/35**; real Telegram 429/5xx and simultaneous alert-channel failure remain unproven.
+Labels: **e2e** is asserted on every run of [`scripts/e2e.ps1`](scripts/e2e.ps1); **provoked** means I broke it on purpose and kept the output; **unproven** means designed and coded, never provoked. Full output for each row is in [`docs/evidence.md`](docs/evidence.md).
 
-| Scenario | Behavior | Evidence |
+| Scenario | Behavior | Label |
 |---|---|---|
-| Fake signature | HTTP 400; fake event is not stored. | [e2e section 7](scripts/e2e.ps1#L217-L233); [PLAN M2/M6](PLAN.md#plan). |
-| Stale timestamp | HTTP 400 for requests older than five minutes. | [PLAN M6 criterion 2](PLAN.md#acceptance-criteria-2); [Intake age check](stripe-intake.sdk.ts#L47-L48). Separate stale-timestamp test remains open. |
-| Duplicate event | HTTP 200 duplicate; one event row, one invoice, unchanged delivery counts. | [e2e section 6 and Assert-Counts](scripts/e2e.ps1#L168-L182); [PLAN M3 resend proof](PLAN.md#proof-required-commands-and-output-shown). |
-| Processor re-run | Attempts increase, proving a real re-run; invoice, email side-effect, Telegram side-effect, and Mailpit counts stay at one. | [e2e section 6b](scripts/e2e.ps1#L184-L197); [PLAN M3 idempotency](PLAN.md#acceptance-criteria). |
-| Unsafe migration | Preflight rejects SQL containing `ON DELETE CASCADE`. | [e2e preflight](scripts/e2e.ps1#L70-L71), [migration lint](scripts/lint-migrations.ps1); [PLAN e2e guard](PLAN.md#plan). |
-| Database down during Intake | HTTP 500 lets Stripe retry; resend after recovery stores the event. | Stripe CLI outage proof recorded in [PLAN M2](PLAN.md#plan); [M6 recovery scenario](PLAN.md#acceptance-criteria-2). |
-| Mailpit down during processing | Event fails with `last_error`; recovery and re-queue finish with one email. | [PLAN M3 outage proof](PLAN.md#proof-required-commands-and-output-shown). Mailpit restart clears the inbox; persistence is an open [M6 task](PLAN.md#acceptance-criteria-2). |
-| Telegram returns 429/5xx | Intended behavior: backoff and at least three tries before marking the event failed. | [M3 criterion 6](PLAN.md#acceptance-criteria) defines the behavior; the [M3 status](PLAN.md#plan) explicitly says real 429/5xx backoff is **unproven**. |
-| Two Processor runs overlap | Atomic claims prevent double processing: three pending events produce three emails, not six. | [PLAN M3 concurrency proof](PLAN.md#proof-required-commands-and-output-shown). |
-| Ignored events exist | Processor leaves ignored events untouched. | [PLAN M3 ignored-events proof](PLAN.md#proof-required-commands-and-output-shown). |
-| PostgreSQL down during Processor runs | One throttled crash alert over repeated failures; the next alert after the window reports the suppressed count. | [M4 proof list](PLAN.md#proof-required-commands-and-output-shown-1). |
-| Event exhausts five attempts | One dead-event alert; later Monitor runs send none. After recovery, replay ends `done` with one email, one invoice, and one replay record. | [M4 dead-event and replay proofs](PLAN.md#proof-required-commands-and-output-shown-1). |
-| Replay targets a done/ignored event or an invalid identifier | Refuse unchanged events; reject malformed identifiers before calling psql. | [M4 replay refusal and input-rejection proofs](PLAN.md#proof-required-commands-and-output-shown-1). |
-| Pending event is stale | A freshly reset pending timestamp produces no alert; after 11 minutes, exactly one stale alert. | [M4 no-false-stale proof](PLAN.md#proof-required-commands-and-output-shown-1). |
-| Retryable failed event is stuck | Old claim produces one alert; a fresh claim produces none. Processor pickup clears the alert marker. | [M4 stuck-failed proof](PLAN.md#proof-required-commands-and-output-shown-1). |
-| Processing event is stuck | A 25-minute-old claim alerts once; a 12-minute control does not. Processor recovery completes both and clears their alert markers. | [M4 stuck-processing proof](PLAN.md#proof-required-commands-and-output-shown-1). |
-| One alert channel fails | With Mailpit down, Telegram still receives the alert and `alerted_at` is set. | [M4 channel-independence proof](PLAN.md#proof-required-commands-and-output-shown-1); [known gaps](PLAN.md#known-gaps-carry-into-the-m6-failure-table) state that each single-channel failure was provoked. |
-| Both alert channels fail | Intended Monitor behavior: leave `alerted_at` unset and retry. Error Handler can lose the alert and suppress repeats for 15 minutes. | [M4 known gaps](PLAN.md#known-gaps-carry-into-the-m6-failure-table): simultaneous failure is **unproven**, and the throttle-window loss is a documented gap. |
-| n8n or WSL stops | Internal monitoring cannot alert. | [M4 known gaps](PLAN.md#known-gaps-carry-into-the-m6-failure-table); the external heartbeat is an open [M5 task](PLAN.md#plan). |
+| Fake signature | 400, event not stored | **e2e** ([output](docs/evidence.md#fake-signature-400)) |
+| Validly signed, older than 5 min | 400, not stored; a fresh control is accepted | **e2e** ([output](docs/evidence.md#stale-timestamp-400)) |
+| Validly signed, dated 1 h in the future | Accepted and stored (the window is one-sided) | **provoked**, a [known limit](#known-limits) ([output](docs/evidence.md#future-timestamp-accepted-a-limit)) |
+| Duplicate event | 200 duplicate, 1 row, 1 invoice, 1 email, 1 Telegram message | **e2e** ([output](docs/evidence.md#duplicate-event-200-duplicate-1-row)) |
+| Postgres down during Intake | 500 for every event; after restart a resend stores 1 row and it ends `done` | **provoked** ([output](docs/evidence.md#database-down-500-then-the-resend-stores-1-row)) |
+| Processor runs again on a done event | Attempts go up, still 1 invoice and 1 message of each kind | **e2e** ([output](docs/evidence.md#re-run-on-the-same-event-no-second-invoice-or-message)) |
+| Two claims at once | The second session gets 0 rows (and, without `SKIP LOCKED`, waits and takes them). Two whole workflow runs racing was not reproduced | **provoked**, claim statement only ([output](docs/evidence.md#two-claims-at-once-no-double-claim)) |
+| `ignored` events | Never claimed, processed or invoiced (102 rows checked) | **provoked** ([output](docs/evidence.md#ignored-events-untouched)) |
+| Mailpit down | Event `failed` with `last_error`; after recovery `done` with 1 email | **provoked** ([output](docs/evidence.md#mailpit-down-failed-then-done-with-1-email)) |
+| Telegram answers 429 or 5xx | Retry with backoff is coded (3 tries, 2 s then 4 s) | **unproven**: no real 429 or 5xx was ever provoked |
+| Postgres down during Processor runs | One crash alert per (workflow, node) per 15 min, then a suppressed count | **provoked** ([output](docs/evidence.md#postgres-down-one-throttled-crash-alert)) |
+| Event reaches 5 failed attempts | One dead-event alert, none after; replay ends `done` with 1 email, 1 invoice, 1 audit row | **provoked** ([output](docs/evidence.md#dead-event-one-alert-replay-ends-done)) |
+| Replay of a `done` event or a malformed id | Refused, rows unchanged; the id never reaches psql | **e2e** for `done` and malformed ids; `ignored` and unknown ids **provoked** |
+| Stale pending, stuck failed, stuck processing | One alert each, a fresh control gets none, the Processor clears the marker | **provoked** ([output](docs/evidence.md#stuck-rows-stale-pending-stuck-failed-stuck-processing)) |
+| One alert channel down | The other still delivers; `alerted_at` is set | **provoked** with Mailpit down ([output](docs/evidence.md#one-alert-channel-down)) |
+| Both alert channels down | Monitor should leave `alerted_at` unset and retry | **unproven** |
+| n8n, WSL or the PC goes silent | Healthchecks.io emails after about 15 min | **provoked** once; that outage ended in an unplanned reboot ([output](docs/evidence.md#heartbeat)) |
+| Wrong Postgres password in the backup config | e2e fails (TCP login from the backup container) | **e2e**, made to fail four ways ([output](docs/evidence.md#backup-and-restore)) |
+| Backup restore | Restored into a throwaway container, row counts match live; a mismatch exits 1 | **provoked** ([output](docs/evidence.md#backup-and-restore)) |
+| Postgres password rotation | 3 failed executions in the window, everything fine afterwards | **provoked** once by me ([output](docs/evidence.md#secret-rotation)) |
 
 ## Known limits
 
-- **At-least-once delivery.** A crash after a send but before its side-effect insert can duplicate that notification. A Monitor crash after delivery but before setting `alerted_at` can duplicate an alert. The records reduce repeat sends during ordinary retries; they do not establish exactly-once delivery. See [M3 criterion 4](PLAN.md#acceptance-criteria) and [M4 criterion 6](PLAN.md#acceptance-criteria-1).
-- **Invoice numbers are sequential, not gapless.** Rollbacks or conflicting inserts can consume sequence values; the sequence does not reset each year. See [migration 004](migrations/004_invoices.sql).
-- **Incomplete failure evidence.** Real Telegram rate-limit/server-error backoff and simultaneous alert-channel failure have not been proven. Undeliverable Error Handler alerts consume the throttle window. See [M3 status](PLAN.md#plan) and [M4 known gaps](PLAN.md#known-gaps-carry-into-the-m6-failure-table).
-- **Hardening remains open.** M5 still lists secret rotation, PostgreSQL backup, a live-mode checklist, a runbook, external monitoring, real alert addresses, and checks of workflow error-handler settings. This README makes no production-readiness claim. See [M5](PLAN.md#plan).
-- **Recreation has an alerting risk.** Workflow `errorWorkflow` settings live in n8n rather than the SDK files. M5 calls for checking them so recreated workflows do not silently lose alerting. See [M5](PLAN.md#plan).
-- **Local evidence and setup have limits.** Mailpit inbox persistence, a fresh-clone setup check, demo material, and a reset script remain M6 tasks. Bulk replay and a replay UI are out of scope for M4. See [M6](PLAN.md#m6-portfolio-packaging) and [M4 out of scope](PLAN.md#out-of-scope).
+- **At-least-once, not exactly-once.** A crash between a send and its `side_effects` insert can duplicate that one message; a Monitor crash between delivery and `alerted_at` can duplicate an alert.
+- **One-sided replay window.** Intake refuses old timestamps but accepts future ones. Exploiting it needs the signing secret, so I rate it low; not changed yet.
+- **Invoices are a technical demo.** Numbers are sequential with possible gaps and no yearly reset. Nothing here claims to meet German invoicing rules (§ 14 UStG, GoBD).
+- **Sandbox and placeholders.** Email goes to Mailpit, whose inbox is lost on restart. The Processor's sender is still the placeholder `stripe-processor@example.test`. See the [live-mode checklist](docs/live-mode-checklist.md).
+- **Alerting limits.** A green heartbeat proves n8n's scheduler and network only, not Postgres or the Processor. An alert that cannot be delivered still uses up its 15-minute throttle window in the Error Handler.
+- **Backups.** Postgres dumps sit on the same disk as the database. n8n's own data is not backed up: workflows can be rebuilt from the `.sdk.ts` files ([runbook, section 8](docs/runbook.md#8-rebuild-n8n-from-the-sdkts-files)) and credentials are re-created by hand.
+- **Never provoked:** real Telegram 429 or 5xx, both alert channels down at once, two whole Processor runs racing. See [not proven](docs/evidence.md#not-proven).
+- **Setup.** This repository holds the workflows, migrations, scripts and runbook. The Docker Compose file and importable workflow files are not in it yet, so it cannot be cloned and run today, only read and reviewed. A clean-clone setup and its verification come next ([M6](PLAN.md#m6-portfolio-packaging)).
 
 ## Tech stack
 
 | Technology | Role |
 |---|---|
-| n8n | Intake, scheduled Processor, Error Handler, Monitor, shared Send Alert workflow |
-| PostgreSQL / SQL | Event storage, atomic claims with `FOR UPDATE SKIP LOCKED`, side-effect records, replay audit, invoice records |
-| TypeScript SDK workflow files | Exported workflow sources in `.sdk.ts` files |
-| Docker Compose | n8n, PostgreSQL, and Mailpit infrastructure (M1) |
-| Mailpit / SMTP | Local email delivery and inspection |
-| Telegram | Payment messages and operational alerts |
-| Stripe / Stripe CLI | Webhook source and trigger/resend checks |
-| PowerShell | Replay operations and `scripts/e2e.ps1` checks |
-
-Sources: [M1–M4 status](PLAN.md#plan), [M3](PLAN.md#m3-stripe-processor), [M4](PLAN.md#m4-failure-visibility), and [invoice schema](migrations/004_invoices.sql).
+| n8n | Intake, scheduled Processor, Monitor, Error Handler and shared Send Alert workflows |
+| PostgreSQL | Event storage, atomic claims, invoice sequence, side-effect and replay records |
+| TypeScript (n8n Workflow SDK) | The five workflows as `.sdk.ts` source files |
+| Docker Compose in WSL | n8n, PostgreSQL, Mailpit and a daily backup container |
+| Mailpit | Local SMTP inbox for invoice and alert emails |
+| Telegram Bot API | Payment messages and alerts |
+| Healthchecks.io | Outside heartbeat that detects silence |
+| Stripe and the Stripe CLI | Sandbox webhook source, trigger and resend |
+| PowerShell | End-to-end checks, replay, restore drill and test-data helpers |
 
 ## How it was built
 
-- I used agentic engineering with Claude Code and Codex.
-- I approved acceptance criteria before each build.
-- I reviewed and corrected AI plans: CASCADE became RESTRICT, a missing invoice step was added, a fallback email address was rejected, and a false stale alert was found in review.
-- I reviewed and ran database migrations myself.
-- Guardrails: e2e as the definition of done, a [workflow drift hook](scripts/hooks/n8n-drift-reminder.mjs), [migration lint](scripts/lint-migrations.ps1), and secret scans.
+- I built it with agentic engineering, using Claude Code and Codex, and approved written acceptance criteria before each milestone.
+- I reviewed and corrected the AI's plans and work. Five examples:
+  1. `CASCADE` on a financial table became `RESTRICT`.
+  2. A missing invoice step was added.
+  3. A fallback email address was rejected; a missing email now fails the event.
+  4. A false stale alert was found in review: staleness was measured from receipt time, so a row released after 30 minutes looked stale. It is now `pending_since`.
+  5. In the M5 review I found that e2e could not detect a wrong `POSTGRES_PASSWORD` in `.env`, because its own database calls use the trusted local socket. That led to [`scripts/check-backup-health.ps1`](scripts/check-backup-health.ps1) ([PR #3](https://github.com/mahmoudsamae/n8n-automation-platform/pull/3)).
+- I reviewed and ran every database migration myself.
+- Guardrails: e2e as the definition of done, a [workflow drift hook](scripts/hooks/n8n-drift-reminder.mjs), [migration lint](scripts/lint-migrations.ps1), a [WSL quoting guard](scripts/hooks/wsl-quoting-guard.mjs), and secret scans.
 
-## Reviewing the project
+## Where to start reading
 
-Start with [PLAN.md](PLAN.md) for acceptance criteria and recovery tests, then read the workflow sources: [Intake](stripe-intake.sdk.ts), [Processor](stripe-processor.sdk.ts), [Error Handler](stripe-error-handler.sdk.ts), [Monitor](stripe-monitor.sdk.ts), and [Send Alert](stripe-send-alert.sdk.ts). The [replay script](scripts/replay.ps1), [e2e script](scripts/e2e.ps1), and [migrations](migrations/) provide the operational context.
-
-**Setup status:** clean-clone instructions and verification remain an [M6 task](PLAN.md#m6-portfolio-packaging). The 35/35 result above is the M4 run recorded in PLAN.md.
+[`PLAN.md`](PLAN.md) has the acceptance criteria and results per milestone. The workflows: [Intake](stripe-intake.sdk.ts), [Processor](stripe-processor.sdk.ts), [Monitor](stripe-monitor.sdk.ts), [Error Handler](stripe-error-handler.sdk.ts), [Send Alert](stripe-send-alert.sdk.ts). Then [`migrations/`](migrations/), [`scripts/`](scripts/) and the [runbook](docs/runbook.md). A short write-up for a CV or LinkedIn is in [`docs/case-study.md`](docs/case-study.md).
 
 ## Kurzfassung
 
-Dieses Portfolio-Projekt verarbeitet Stripe-Zahlungen mit n8n und PostgreSQL zu Rechnungen sowie E-Mail- und Telegram-Benachrichtigungen. Pro bezahltem Ereignis entsteht genau eine Rechnung mit sequenzieller Nummer im Format `INV-YYYY-NNNNNN`; eine UNIQUE-Bedingung verhindert doppelte Rechnungen bei Wiederholungen. Beträge werden im Format `de-DE` ausgegeben, auch für Währungen ohne Nachkommastellen. Atomare Verarbeitung, Fehleralarme und protokollierte Replays sichern die Wiederaufnahme nach Störungen. PLAN.md dokumentiert M1–M4 als abgeschlossen und 35/35 e2e-Prüfungen. Bekannte Grenzen sind mögliche doppelte Benachrichtigungen nach einem Absturz, noch nicht belegte Telegram-Backoff-Fälle und fehlende externe Überwachung bei einem Ausfall von n8n oder WSL.
+Dieses Portfolio-Projekt verarbeitet Stripe-Zahlungsereignisse mit fünf n8n-Workflows und PostgreSQL zu Rechnungen sowie E-Mail- und Telegram-Benachrichtigungen. Jedes Ereignis wird gespeichert, bevor es bestätigt wird; pro bezahltem Ereignis entsteht genau eine Rechnung mit der Nummer `INV-JJJJ-NNNNNN`, und Wiederholungen erzeugen keine zweite. Fällt die Datenbank aus, antwortet der Webhook mit 500, sodass Stripe es erneut versucht. Tote oder hängende Ereignisse lösen einen Alarm aus und lassen sich mit Begründung und Protokolleintrag erneut verarbeiten. Ein externer Heartbeat meldet Stille nach etwa 15 Minuten. Alles läuft nur in der Stripe-Sandbox. Ein Skript führt 42 End-to-End-Prüfungen aus, und jede Zeile der Fehlertabelle ist als geprüft, gezielt ausgelöst oder unbelegt gekennzeichnet. Nicht belegt sind echte Telegram-429/5xx-Fehler, der gleichzeitige Ausfall beider Alarmkanäle und zwei vollständig parallel laufende Processor-Läufe. Bekannte Grenzen: mögliche doppelte Benachrichtigung nach einem Absturz (at-least-once), ein einseitiges Zeitfenster gegen Replay-Angriffe und Rechnungen, die keine Konformität mit deutschem Rechnungsrecht (§ 14 UStG, GoBD) beanspruchen. Das Repository lässt sich noch nicht frisch klonen und starten; das ist der nächste Schritt.
