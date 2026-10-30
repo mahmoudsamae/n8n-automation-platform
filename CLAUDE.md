@@ -65,6 +65,8 @@ kind `email` or `telegram`), `invoices` (event_id UNIQUE), all FK ON DELETE REST
 - Seed a test row in a chosen state (stuck, stale, dead) with `scripts\seed-test-event.ps1`; it copies a real done payload and accepts only `evt_test_` ids.
 - Test rows use `event_id LIKE 'evt_test_%'`; delete only those with `scripts\clean-test-event.ps1 -Id evt_test_... [-DryRun]` (FK order, all RESTRICT: `event_replays`, `side_effects`,
   `invoices`, `stripe_events`). `scripts/e2e.ps1` events have real `evt_...` ids and are tagged by Stripe metadata `e2e=true`, so the `evt_test_` filter misses them.
+- `scripts\check-stale-timestamp.ps1` (run by e2e) sends validly signed requests with an old and a fresh timestamp; its two `evt_test_e2e_stale_*` rows are removed before and after. The signature is computed inside WSL, only the HMAC comes back.
+  Prove it can fail with `-AgeSeconds 0` and `-CorruptSignature`. Recorded outputs for the README's failure table live in `docs/evidence.md`.
 
 ## Gotchas learned
 - NEVER set `alwaysOutputData: true` on the Insert Event node. When the DB is down it emits an empty item
@@ -79,6 +81,9 @@ kind `email` or `telegram`), `invoices` (event_id UNIQUE), all FK ON DELETE REST
 - Postgres, n8n and Mailpit timestamps are UTC; Windows and Healthchecks.io use Europe/Berlin (currently UTC+1). In docs and PRs write Berlin time with UTC in parentheses.
 - `wsl <cmd>` runs through an outer shell that expands `$VAR` and `$(...)` first (this once printed a secret in an error message), and PowerShell 5.1 prepends a BOM when piping to `wsl`.
   Run anything with `$`, quotes or secrets through `& scripts\wsl-sh.ps1 -Script '...'` (base64); the hook `scripts/hooks/wsl-quoting-guard.mjs` blocks the unsafe forms (test: `node scripts/hooks/wsl-quoting-guard.test.mjs`).
+- PowerShell 5.1: `Get-Date -UFormat %s` is the LOCAL epoch (3600 s ahead in Berlin). Use `[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()` for anything compared with a server clock (it made a "stale timestamp" test send a future one).
+  Also, a pipeline that yields ONE string is not an array: `(... | Where-Object {...})[0]` returns its first character. Wrap in `@(...)` before indexing or counting.
+- Intake's replay window is one-sided: it rejects timestamps older than 5 min but accepts future ones (measured, `docs/evidence.md`). Known and listed; not changed.
 - PowerShell 5.1 mangles embedded double quotes in native arguments: use `git commit -F file`, `gh pr create --body-file`, and parse `gh ... --json` with ConvertFrom-Json (not `--jq` with spaces).
 - `docker compose up -d` re-reads `~/n8n/.env`; `restart` does not. Recreating n8n drops the n8n MCP connection, sometimes for a long time: list executions with `scripts\n8n-executions.ps1` (reads n8n's SQLite, read-only).
 - The official postgres image's pg_hba TRUSTS `local`, `127.0.0.1` and `::1` inside the `postgres` container: any password works there (and for every `docker exec postgres psql`).

@@ -39,6 +39,8 @@ deployment would have to change, and how to check each item. Every item needs a 
   Verify: ask the client's accountant, write the period into the runbook.
 - [ ] **Invoice numbering rules.** `INV-<year>-<6 digits>` comes from a sequence with no yearly reset, and gaps are possible after a rolled-back insert. Some countries require gapless numbering.
   Verify: accountant sign-off.
+- [ ] **Archive the sent invoice PDF unchanged (GoBD).** The demo renders invoices on demand from the stored row, so a later template change would alter re-rendered invoices; the stored row is not the document that was sent. A real German deployment must keep the sent PDF itself, unchanged: write it to write-once storage at send time, with its hash, and link it to the invoice number. Not built here.
+  Verify: change the template, re-render an old invoice, and confirm the archived copy still matches its recorded hash and still shows the original layout. Have the client's accountant confirm the retention rules and period.
 - [ ] **Remove test data:** `evt_test_%` rows, `e2e=true` events, the Mailpit inbox.
   Verify: `select count(*) from stripe_events where event_id like 'evt\_test\_%'` is 0. Delete order: `event_replays`, `side_effects`, `invoices`, `stripe_events`.
 
