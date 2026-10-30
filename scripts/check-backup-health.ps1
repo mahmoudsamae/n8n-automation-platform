@@ -14,7 +14,7 @@ if ($Container -notmatch '^[a-z0-9][a-z0-9_-]{0,63}$') { throw "unexpected conta
 $override = [string]$env:PGPASSWORD
 if ($override -and $override -notmatch '^[A-Za-z0-9._-]{1,64}$') { throw 'PGPASSWORD override must match ^[A-Za-z0-9._-]{1,64}$' }
 
-# Runs inside WSL as base64 so no PowerShell/wsl quoting touches it (see CLAUDE.md gotchas).
+# Runs inside WSL through wsl-sh.ps1 so no PowerShell/wsl quoting touches it (see CLAUDE.md gotchas).
 $sh = @'
 set +x
 c=__CONTAINER__
@@ -37,8 +37,7 @@ case "$last" in
 esac
 '@
 $sh = $sh.Replace('__CONTAINER__', $Container).Replace('__OVERRIDE__', $override)
-$b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($sh -replace "`r", '')))
-$lines = @(wsl -d Ubuntu bash -c "echo $b64 | base64 -d | bash") | ForEach-Object { "$_".Trim() } | Where-Object { $_ }
+$lines = @(& "$PSScriptRoot\wsl-sh.ps1" -Script $sh) | ForEach-Object { "$_".Trim() } | Where-Object { $_ }
 $r = @{}
 foreach ($l in $lines) { $k, $v = $l -split ':', 2; $r[$k] = $v }
 

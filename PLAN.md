@@ -8,8 +8,8 @@ Pipeline: Stripe -> Intake -> `stripe_events` -> Processor -> Mailpit + Telegram
 | M2 | Stripe Intake workflow: signature check, classify, idempotent insert, 200/400/500 contract. Proven with stripe CLI, including DB-down 500 | DONE |
 | M3 | Stripe Processor workflow (below) | DONE. `scripts/e2e.ps1` guards it. Known gap: real Telegram 429/5xx never provoked, backoff is unproven (needed for M6 failure table) |
 | M4 | Failure visibility (below): error workflow, alert when an event ends `failed`, safe way to replay a failed event | DONE, merged (PR #1). Proofs run (see the M4 section); `scripts/e2e.ps1` 35/35. Known gaps (carry into the M6 failure table): see "Known gaps" in the M4 section |
-| M5 | Hardening: secret rotation procedure, Postgres backup, live-mode checklist, runbook, external dead man's switch (Monitor pings an outside heartbeat service; silence triggers the alert, covering n8n/WSL down), e2e check that each workflow's `errorWorkflow` setting is correct (it lives only in n8n, not in the `.sdk.ts` files, so a workflow recreated from its file would silently lose alerting): Intake, Processor and Monitor must point at the Error Handler id, and the Error Handler and Send Alert must have none; replace the placeholder alert addresses (`ops@example.test` recipient, `stripe-alerts@example.test` sender in `Stripe Send Alert`) with real ones | DONE on branch `m5-hardening` (pushed, not merged). All proofs recorded, `scripts/e2e.ps1` 40/40; proof 1b down 10:28:28 / up 10:33:28 Berlin time, proof 6 Postgres rotation (see "Results" in the M5 section). Known gaps listed there carry into M6 |
-| M6 | Portfolio packaging: README with architecture diagram, failure scenarios with proof, 2-minute demo script | TODO |
+| M5 | Hardening: secret rotation procedure, Postgres backup, live-mode checklist, runbook, external dead man's switch (Monitor pings an outside heartbeat service; silence triggers the alert, covering n8n/WSL down), e2e check that each workflow's `errorWorkflow` setting is correct (it lives only in n8n, not in the `.sdk.ts` files, so a workflow recreated from its file would silently lose alerting): Intake, Processor and Monitor must point at the Error Handler id, and the Error Handler and Send Alert must have none; replace the placeholder alert addresses (`ops@example.test` recipient, `stripe-alerts@example.test` sender in `Stripe Send Alert`) with real ones | DONE, merged (PR #2, review follow-up PR #3). All proofs recorded, `scripts/e2e.ps1` 41/41 (see "Results" in the M5 section). Known gaps listed there carry into M6 |
+| M6 | Portfolio packaging: README with architecture diagram, failure scenarios with proof, 2-minute demo script | NEXT. First step is in the M6 section: review the README draft on `m6-readme-draft` |
 
 ## M3: Stripe Processor
 
@@ -189,6 +189,7 @@ All times are Europe/Berlin (CET, UTC+1) with UTC in parentheses. Healthchecks.i
 - **Proof 8** done: `scripts/e2e.ps1` 40/40.
 - Side finding fixed: `seed-test-event.ps1` failed without `-ClaimedMinutesAgo` (`''::int` is evaluated while planning); now NULL-safe.
 - Review follow-up (after the M5 merge): e2e could pass while every backup failed, because its psql calls use the trusted local socket and never test the password. `scripts/check-backup-health.ps1`, run by e2e (now 41 checks), authenticates over TCP from `postgres-backup` with the `.env` password, checks the container was created with that same password, and fails if its last log line is `backup FAILED` (prints yes/no only). Proven able to fail: `PGPASSWORD=wrong` (TCP FAIL, exit 1, and e2e itself stops in preflight with exit 1), a throwaway container whose last log line is `backup FAILED`, a throwaway container created with a stale password, and a missing container.
+- Compound follow-up (branch `compound-m5`): `scripts/wsl-sh.ps1` (run a bash script in WSL via base64), the PreToolUse hook `scripts/hooks/wsl-quoting-guard.mjs` (blocks `wsl ... bash -c` with `$(`, `` `$ `` or `\$`, and `wsl` reads of `.env`, secret-looking `printenv` or `docker compose config`, and names `scripts/wsl-sh.ps1` as the alternative; 15-case test, which was itself proven able to fail against stub hooks that allow or block everything), `scripts/clean-test-event.ps1` and `scripts/n8n-executions.ps1`. The global `automation-review` skill gained "provoke every check's failure path once" (three checks in M5 could never fail until they were provoked). The drift hook's workflow map now knows all five workflows.
 
 ### Known gaps after M5 (carry into the M6 failure table)
 - A green heartbeat does not prove Postgres or the Processor work.
@@ -204,6 +205,10 @@ Off-site backups, automating Healthchecks.io through its API, the Mailpit volume
 
 Starts after M3 (M4 and M5 can finish first). Only claims backed by evidence from real runs go in.
 
+**Next concrete step:** a README draft by another agent sits unreviewed on branch `m6-readme-draft` (worktree `C:/dev/n8n-workflows-readme`, `README.md` only, 131 lines, 2 commits).
+Review it against criteria 1-2 below and the M3-M5 results in this file (every claim needs evidence), then rebase it onto `main`. After that: failure-scenarios table, `DEMO.md`,
+demo-reset script, Mailpit volume, daily n8n export (items 2-8). Worktree agents edit files only; the live stack has one agent at a time (CLAUDE.md Rules).
+
 ### Acceptance criteria
 1. **README.md:** one-paragraph pitch, architecture diagram (Stripe -> Intake -> `stripe_events` -> Processor -> Mailpit + Telegram,
    with the 200/400/500 branches), setup steps that work from a clean clone, and the tech list.
@@ -211,7 +216,7 @@ Starts after M3 (M4 and M5 can finish first). Only claims backed by evidence fro
    fake signature (400), stale timestamp (400), duplicate event (200 duplicate, 1 row), database down (500, then resend stores 1 row),
    Mailpit down (event `failed`, later `done` with 1 email), Telegram 429/5xx (backoff then success), two Processor runs at once (no double send),
    `ignored` events untouched, Postgres down (one throttled crash alert), dead event (one alert, replay ends `done` with 1 email),
-   stuck rows (alerts for stale pending, stuck failed, stuck processing). Also list the M4 known gaps.
+   stuck rows (alerts for stale pending, stuck failed, stuck processing). Also list the M4 known gaps and the M5 known gaps (see "Known gaps after M5").
 3. **DEMO.md:** a 2-minute video script with timestamps, the exact commands to type, and what should be on screen at each step.
 4. **No secrets:** screenshots, logs and commands are redacted (no `whsec_`, bot tokens, passwords).
 5. **Fresh-clone check:** the README setup is followed once on a clean folder and the result is noted in the README.
