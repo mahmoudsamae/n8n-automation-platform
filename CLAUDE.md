@@ -17,7 +17,8 @@ Intake only verifies, classifies and stores (fast). All slow work belongs to the
 - Container `postgres-backup` (M5): `pg_dump -Fc` at start and every 24 h into `~/n8n/backups/automation-<UTC timestamp>.dump` (mode 600, root-owned, never in git: it holds customer emails).
   Temp file + rename; after a failed dump it retries in 5 min; keeps 14 days (prunes only its own `automation-*.dump` after a good dump). Postgres only: n8n's workflows live in SQLite in the `n8n_data` volume.
   `scripts\restore-check.ps1 [-Fresh]` restores the newest dump into a throwaway container with no network and compares row counts with live.
-  `scripts\check-error-workflows.ps1` checks each workflow's `errorWorkflow` on live n8n; e2e runs both checks.
+  `scripts\check-error-workflows.ps1` checks each workflow's `errorWorkflow` on live n8n; `scripts\check-backup-health.ps1` authenticates over TCP from `postgres-backup` with the `.env` password
+  (e2e's own psql calls use the trusted socket and cannot see a wrong password), checks the container holds the same password, and fails if its last log line is `backup FAILED`. e2e runs all of these checks.
 - n8n credential: `Postgres automation` (id `XVNN7sIThniqsuOf`). DB and user are both `automation`.
 - Env var NAMES (the compose file only holds `${VAR}` references; real values live in `~/n8n/.env` in WSL, never copy them here):
   `STRIPE_WEBHOOK_SECRET`, `TELEGRAM_CHAT_ID`, `ALERT_EMAIL_TO`, `ALERT_EMAIL_FROM`, `HEARTBEAT_URL` (Healthchecks.io ping URL: the UUID is its only credential, treat it as a secret), `NODE_FUNCTION_ALLOW_BUILTIN`, `N8N_BLOCK_ENV_ACCESS_IN_NODE`,

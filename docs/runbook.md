@@ -25,7 +25,7 @@ Stop: `wsl -d Ubuntu bash -c "cd ~/n8n && docker compose stop"`. Never `docker c
 powershell -File scripts\e2e.ps1
 ```
 
-It checks containers, migration 005, the `errorWorkflow` settings, a fresh Postgres dump, the three env vars, then pushes one real test
+It checks containers, migration 005, the `errorWorkflow` settings, a fresh Postgres dump, that the backup container can log in over TCP and is not failing, the three env vars, then pushes one real test
 event through the whole pipeline. It creates one `e2e=true` event and deletes nothing. For a read-only look: `scripts\check-error-workflows.ps1`.
 
 ## 3. What each alert means
@@ -126,7 +126,10 @@ Rehearsed on 2026-10-30; steps 1-7 are what was done. The new value never appear
      Only connections from other containers (and the published port) go through `scram-sha-256`.
    - The OLD password cannot be tested: it no longer exists anywhere. Its rejection follows from step 3 (`ALTER USER` replaces the password) and was not tested with the old value.
 The password lives in three places that must change together: the database, `.env` (read by `postgres-backup`), and the n8n credential. The scripts that run `docker exec postgres psql` use the local socket (trust),
-so e2e does not notice a wrong password in `.env`; only `postgres-backup` uses that value, and a wrong one shows up as `backup FAILED` in its log.
+so their calls cannot see a wrong password. `scripts\check-backup-health.ps1` (run by e2e) closes that gap: it authenticates over TCP from `postgres-backup` with the `.env` password,
+checks that the container was created with that same password (catches a forgotten recreate), and fails if the container's last log line is `backup FAILED`
+(after a Postgres restart that clears itself on the 5-minute retry, or run `docker restart postgres-backup`). It prints yes/no only.
+Prove it can fail: `$env:PGPASSWORD = 'wrong'` then run it, expect `[FAIL] TCP auth` and exit 1 (the override is for tests only).
 
 **Recommendation for a real client: two login roles, no downtime window.** The procedure above has a window (steps 3-5) in which a consumer holds a rejected password. A client should not accept that. Not built or rehearsed here.
 - Keep `automation` as the admin role: migrations and the `docker exec ... psql` scripts, never used by n8n over TCP.
