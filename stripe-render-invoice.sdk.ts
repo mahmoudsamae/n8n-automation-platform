@@ -89,7 +89,6 @@ const vat = gross - net;
 // Customer-controlled text (name, email, product) is escaped everywhere it is shown.
 const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 const name = String(inv.customer_name).trim();
-const firstName = name.split(/\\s+/)[0];
 const date = new Intl.DateTimeFormat('de-DE', { timeZone: 'Europe/Berlin', day: '2-digit', month: '2-digit', year: 'numeric' }).format(new Date(inv.created_at));
 const total = money(gross);
 const netText = money(net);
@@ -188,10 +187,12 @@ const text = [
   'Referenz: ' + inv.event_id,
 ].join('\\n');
 
+// Owner message (Telegram HTML parse mode): every customer-controlled value is escaped. No event id.
 const telegramText = [
   '<b>Zahlung eingegangen</b>',
   'Betrag: ' + esc(total),
-  'Kunde: ' + esc(firstName),
+  'Kunde: ' + esc(name),
+  'Zahlungsart: ' + esc(method),
   'Rechnung: ' + esc(number),
   'Produkt: ' + esc(product),
 ].join('\\n');
@@ -199,7 +200,8 @@ const telegramText = [
 const json = {
   problem: '', invoice_number: number, event_id: inv.event_id, include_pdf: includePdf,
   net_cents: net, vat_cents: vat,
-  subject: 'Ihre Rechnung ' + number, html: htmlEmail, text, telegram_text: telegramText, pdf_name: 'Rechnung-' + number + '.pdf',
+  subject: 'Ihre Rechnung ' + number, html: htmlEmail, text, telegram_text: telegramText, telegram_caption: 'Rechnung ' + number,
+  pdf_name: 'Rechnung-' + number + '.pdf',
 };
 if (!includePdf) return { json };
 const indexhtml = await this.helpers.prepareBinaryData(Buffer.from(htmlPdf, 'utf8'), 'index.html', 'text/html');
@@ -279,7 +281,8 @@ const attachPdf = node({
 let buf = null;
 try { buf = await this.helpers.getBinaryDataBuffer($itemIndex, 'data'); } catch (e) { buf = null; }
 if (!buf || buf.length < 1000 || buf.slice(0, 5).toString('latin1') !== '%PDF-') {
-  return { json: { ...doc, problem: 'Render PDF (Gotenberg): the response was not a PDF' } };
+  // the owner text still goes out, saying that the PDF is missing
+  return { json: { ...doc, problem: 'Render PDF (Gotenberg): the response was not a PDF', telegram_text: doc.telegram_text + '\\nPDF fehlt: konnte nicht erstellt werden. Es wird erneut versucht.' } };
 }
 const invoicePdf = await this.helpers.prepareBinaryData(buf, doc.pdf_name, 'application/pdf');
 return { json: doc, binary: { invoice_pdf: invoicePdf } };`,
@@ -301,7 +304,8 @@ const pdfFailed = node({
 const err = $json.error;
 let message = (typeof err === 'string' ? err : (err && (err.message || err.description))) || 'unknown error';
 message = 'Render PDF (Gotenberg): ' + String(message).replace(/\\s+/g, ' ').trim();
-return { json: { invoice_number: doc.invoice_number, include_pdf: true, problem: message.slice(0, 200) } };`,
+// the owner text still goes out, saying that the PDF is missing (fixed wording, no internal error text)
+return { json: { invoice_number: doc.invoice_number, include_pdf: true, problem: message.slice(0, 200), telegram_text: doc.telegram_text + '\\nPDF fehlt: konnte nicht erstellt werden. Es wird erneut versucht.' } };`,
     },
     position: [1300, 480],
   },
