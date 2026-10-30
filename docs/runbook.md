@@ -25,8 +25,9 @@ Stop: `wsl -d Ubuntu bash -c "cd ~/n8n && docker compose stop"`. Never `docker c
 powershell -File scripts\e2e.ps1
 ```
 
-It checks containers, migration 005, the `errorWorkflow` settings, a fresh Postgres dump, that the backup container can log in over TCP and is not failing, the three env vars, then pushes one real test
-event through the whole pipeline and ends with a stale-timestamp check. It creates one `e2e=true` event and deletes no real data (its only deletes are its own two `evt_test_e2e_stale_*` rows). For a read-only look: `scripts\check-error-workflows.ps1`.
+It checks containers (including `gotenberg`), migrations 005 and 006, the `errorWorkflow` settings of all 7 workflows, a fresh Postgres dump, that the backup container can log in over TCP and is not failing, the env vars
+(`TELEGRAM_SEND_PDF` must be exactly `true` or `false`), then pushes one real demo payment (`scripts\demo-payment.ps1`) through the whole pipeline: invoice row, exactly 1 email with exactly 1 real PDF, the Telegram document, a resend, a Processor re-run, and ends with a stale-timestamp check.
+It creates one `e2e=true` event and deletes no real data (its only deletes are its own two `evt_test_e2e_stale_*` rows). For a read-only look: `scripts\check-error-workflows.ps1`.
 
 ## 3. What each alert means
 
@@ -36,6 +37,9 @@ event through the whole pipeline and ends with a stale-timestamp check. It creat
 | `STALE PENDING` | `pending` for 10+ min. The Processor is not picking events up. | Is the Processor workflow published and active? Check its executions in n8n. Check `docker ps`. |
 | `STUCK FAILED` | `failed`, attempts < 5, retry overdue 10+ min. Same cause as above. | Same as stale pending. |
 | `STUCK PROCESSING` | `processing` for 20+ min. A run died mid-event. | The Processor releases rows at 10 min by itself; if it did not, the Processor is not running. |
+| `DEAD` with `last_error` `Render PDF (Gotenberg): ...` | The PDF could not be produced for 5 attempts (the owner got ONE text saying "PDF fehlt"). | Section 10: is `gotenberg` running? Then replay (section 5): only the missing email and document are sent. |
+| `DEAD` with `last_error` `TELEGRAM_SEND_PDF must be set to true or false ...` | The variable is missing or wrong in the n8n container. | Section 10: set it in `~/n8n/.env` and in the compose `environment:` of n8n, `docker compose up -d --no-deps n8n`, replay. |
+| `DEAD` with `last_error` `... No such checkout.session ...` or another Stripe message | The one Stripe lookup for the invoice failed (a 4xx is not retried). | Check the `Stripe read-only` credential and the session id in the payload; nothing was sent and no invoice exists. |
 | `Workflow error: <workflow> / <node>` | A workflow crashed. One alert per (workflow, node) per 15 min, later ones say "N similar errors suppressed". | Open the execution id from the alert. Postgres down is the common cause: `docker ps`, `docker start postgres`. |
 | Healthchecks.io "stripe-pipeline is down" | No ping for about 15 min. n8n, WSL, the PC or the network is down. | Section 4. |
 
@@ -150,23 +154,42 @@ Rehearsed in this project: the Postgres password and `HEARTBEAT_URL`. The Telegr
 
 ## 8. Rebuild n8n from the `.sdk.ts` files
 
-Needed if the `n8n_data` volume is lost. The five workflows are in the repo: `stripe-intake.sdk.ts`, `stripe-processor.sdk.ts`,
-`stripe-error-handler.sdk.ts`, `stripe-monitor.sdk.ts`, `stripe-send-alert.sdk.ts`.
+Needed if the `n8n_data` volume is lost. The seven workflows are in the repo: `stripe-intake.sdk.ts`, `stripe-processor.sdk.ts`, `stripe-error-handler.sdk.ts`, `stripe-monitor.sdk.ts`,
+`stripe-send-alert.sdk.ts`, `stripe-render-invoice.sdk.ts`, `stripe-send-telegram.sdk.ts`.
 
 1. Start the stack, create the n8n owner account.
-2. Re-create three credentials by hand (they are never exported): `Postgres automation` (host `postgres`, DB and user `automation`),
-   `Mailpit SMTP` (host `mailpit`, port 1025, no auth), `Telegram alerts` (bot token).
-3. Create the workflows from the files (n8n MCP `create_workflow_from_code`), Send Alert and Error Handler first.
-4. **New workflow ids.** The Monitor calls Send Alert by id, and `errorWorkflow` points at the Error Handler by id. Update: the id in
-   `stripe-monitor.sdk.ts` (Send Alert), the id in `scripts\check-error-workflows.ps1`, and the table in `CLAUDE.md`.
+2. Re-create four credentials by hand (they are never exported): `Postgres automation` (host `postgres`, DB and user `automation`),
+   `Mailpit SMTP` (host `mailpit`, port 1025, no auth), `Telegram alerts` (bot token), `Stripe read-only` (type Stripe API, a restricted test-mode key with read access to Checkout Sessions, PaymentIntents and Charges, restricted to `api.stripe.com`).
+3. Create the workflows from the files (n8n MCP `create_workflow_from_code`) in this order: Send Alert, Error Handler, **Render Invoice, Send Telegram**, then Monitor, Intake and the Processor last.
+4. **New workflow ids.** The Monitor calls Send Alert by id, the Processor calls Render Invoice and Send Telegram by id, and `errorWorkflow` points at the Error Handler by id. Update: the ids in
+   `stripe-monitor.sdk.ts` (Send Alert) and `stripe-processor.sdk.ts` (Render Invoice, Send Telegram), the ids in `scripts\check-error-workflows.ps1`, `scripts\hooks\n8n-drift-reminder.mjs`, and the table in `CLAUDE.md`.
 5. Set `settings.errorWorkflow` (= Error Handler id) on Intake, Processor and Monitor with `update_workflow`; the `.sdk.ts` files cannot carry it.
-   Leave it empty on the Error Handler and Send Alert, so a failing alert can never trigger another alert.
-6. Publish all five, then `scripts\check-error-workflows.ps1` and `scripts\e2e.ps1` must pass.
+   Leave it empty on the Error Handler, Send Alert, Render Invoice and Send Telegram (the first so a failing alert can never trigger another alert, the other two because they return their problems to the Processor).
+6. Publish all seven, then `scripts\check-error-workflows.ps1` and `scripts\e2e.ps1` must pass.
 
 ## 9. Known limits
 
 - A green heartbeat does not prove Postgres or the Processor work.
 - Backups are on the same disk as the database, and n8n's own data is not backed up yet.
 - An undeliverable crash alert still uses up its 15 min throttle window.
-- Both alert channels failing at once, and real Telegram 429/5xx backoff, were never provoked.
+- Both alert channels failing at once, and real Telegram 429/5xx backoff, were never provoked. The same holds for a failing `sendDocument` call; the retry loop itself was proven in the engine with a stub.
+- If the PDF cannot be produced AND the owner text send also fails, `last_error` names the Telegram failure and the PDF problem resurfaces on the next run.
 - Stripe is test mode only. See `docs/live-mode-checklist.md`.
+
+## 10. Invoices: Gotenberg, the PDF and Telegram
+
+**Flow.** Per paid event the Processor looks up the product and the payment method once from Stripe (only when no invoice exists yet) and stores them on the invoice row. `Stripe Render Invoice` then builds the German email (HTML + text), the Telegram text and the PDF
+from that row alone, so a retry or a replay produces the same document and never calls Stripe again. The email carries exactly one PDF. The Telegram owner text and, if enabled, the PDF as a document go through `Stripe Send Telegram`.
+
+**Gotenberg** (`gotenberg/gotenberg:8.39.0-chromium`, internal only, no published port): `docker compose ps gotenberg`; restart with `docker compose up -d gotenberg`. It is capped at 512 MB (memory and swap). Chromium stays resident, so it idles at about 360-410 MB.
+If it is down the Processor keeps retrying every minute: no email is sent, the owner gets ONE text saying "PDF fehlt", and `last_error` says `Render PDF (Gotenberg): ...`. When it is back the next run sends the email and the document, and not a second text.
+
+**Sending the PDF to Telegram is a data-protection decision.** The invoice PDF contains the customer's name and email address (and what they bought). Sending it to Telegram passes that personal data to a third party, a messaging provider whose servers are outside this deployment.
+Under the GDPR a real deployment must decide this on purpose: it needs a legal basis, a processor agreement or other transfer safeguard where required, a retention and deletion answer (the messages stay in the chat), and a mention in the privacy notice. Until then run with `TELEGRAM_SEND_PDF=false`:
+the owner text still goes out (it also names the customer) and the PDF stays on the email only. In this portfolio project everything is sandbox data and the value is `true` for the demo. This is documentation for a hypothetical client, not legal advice.
+
+**`TELEGRAM_SEND_PDF`.** Exactly `true` or `false`, no default: unset or anything else fails every event with `TELEGRAM_SEND_PDF must be set to true or false in the n8n environment`. Two lines have to agree:
+`~/n8n/.env` gets `TELEGRAM_SEND_PDF=true` (or `false`), and the `n8n` service in `~/n8n/docker-compose.yml` lists `      - TELEGRAM_SEND_PDF=${TELEGRAM_SEND_PDF}` under `environment:`. Apply with `docker compose up -d --no-deps n8n` (this drops the n8n MCP for a moment).
+With `false` no document is sent and `telegram_document` is not required for `done`. To try the other value once without touching `.env`: `TELEGRAM_SEND_PDF=false docker compose up -d --no-deps n8n`, then a plain `docker compose up -d --no-deps n8n` to go back.
+
+**Rotate the `Stripe read-only` key.** In the Stripe Dashboard (test mode) create a replacement restricted key with the same three read permissions, put it into the n8n credential `Stripe read-only`, run `scripts\demo-payment.ps1` with a listener (or `scripts\e2e.ps1`) and check that the event ends `done`, then delete the old key. The key is not in `.env` and never in git.

@@ -10,6 +10,7 @@ Pipeline: Stripe -> Intake -> `stripe_events` -> Processor -> Mailpit + Telegram
 | M4 | Failure visibility (below): error workflow, alert when an event ends `failed`, safe way to replay a failed event | DONE, merged (PR #1). Proofs run (see the M4 section); `scripts/e2e.ps1` 35/35. Known gaps (carry into the M6 failure table): see "Known gaps" in the M4 section |
 | M5 | Hardening: secret rotation procedure, Postgres backup, live-mode checklist, runbook, external dead man's switch (Monitor pings an outside heartbeat service; silence triggers the alert, covering n8n/WSL down), e2e check that each workflow's `errorWorkflow` setting is correct (it lives only in n8n, not in the `.sdk.ts` files, so a workflow recreated from its file would silently lose alerting): Intake, Processor and Monitor must point at the Error Handler id, and the Error Handler and Send Alert must have none; replace the placeholder alert addresses (`ops@example.test` recipient, `stripe-alerts@example.test` sender in `Stripe Send Alert`) with real ones | DONE, merged (PR #2, review follow-up PR #3). All proofs recorded, `scripts/e2e.ps1` 41/41 (see "Results" in the M5 section). Known gaps listed there carry into M6 |
 | M6a | Portfolio packaging, part 1: README reviewed and updated for M5, `docs/evidence.md`, stale-timestamp check, new proofs, case study (EN/DE) | IN REVIEW: PR open on `m6a-portfolio-readme`, not merged. `scripts/e2e.ps1` 42/42 (see "Results" in the M6 section) |
+| INV | Invoice design: German invoice (HTML email, plain text, PDF via Gotenberg) rendered only from the stored invoice row by the sub-workflow `Stripe Render Invoice`; one read-only Stripe lookup for product and payment method; owner Telegram text plus optional PDF document (`TELEGRAM_SEND_PDF`) through the shared sub-workflow `Stripe Send Telegram` | IN REVIEW: PR open on `invoice-design`, not merged. `scripts/e2e.ps1` 49/49, proofs in `docs/evidence.md` (section "Invoice, PDF and Telegram"). Not proven: real Stripe and Telegram 429/5xx, `sendDocument` failing |
 | M6b | Portfolio packaging, part 2: Mailpit volume, daily n8n export, clean-clone files and check, demo reset, `DEMO.md` | NEXT, after M6a is merged |
 | M7 | Public live demo (see the M7 section) | TODO. Criteria are written in their own session, not before |
 
@@ -252,7 +253,7 @@ check the worktree is clean, `git worktree remove "C:\dev\n8n-workflows-readme"`
 Acceptance criteria:
 1. **Mailpit volume:** `mailpit_data` with `MP_DATABASE`, applied with `up -d --no-deps mailpit` (recreating n8n drops the n8n MCP). Proof: a message survives `docker restart mailpit` and a `compose down` + `up` (never `-v`). Compose copy synced with `C:\dev\claude-config\sync.ps1`.
 2. **Daily n8n export:** a sidecar on the same n8n image and the `n8n_data` volume runs `export:workflow --all` at start and every 24 h into `~/n8n/backups/n8n-workflows-<UTC>.json`: temp file then rename, mode 600, 5-minute retry, 14-day pruning of its own pattern only, no credentials and no `--decrypted`. A sidecar, not cron, because the stack is not always on (M5 finding), and not n8n backing itself up, because that fails exactly when n8n does.
-   e2e fails if the newest export is empty or older than 25 h (failure path provoked once). `check-error-workflows.ps1` gains `-ExportFile`. Proof: import into a throwaway n8n with no network and show 5 workflows with the right `errorWorkflow`; a tampered copy gives FAIL. The runbook lists the three credentials to re-create by hand.
+   e2e fails if the newest export is empty or older than 25 h (failure path provoked once). `check-error-workflows.ps1` gains `-ExportFile`. Proof: import into a throwaway n8n with no network and show 7 workflows with the right `errorWorkflow`; a tampered copy gives FAIL. The runbook lists the three credentials to re-create by hand.
 3. **Clean-clone files:** `deploy/docker-compose.yml`, `.env.example` (names only), `workflows/*.json` from the export (no `staticData`, no `pinData`, grepped for secrets; `.sdk.ts` stays the source of truth), n8n image pinned to the version running now. e2e fails if the repo compose differs from `~/n8n` or the JSON from live. JSON, because `n8n import:workflow` keeps ids, so `errorWorkflow` and Send Alert references survive without the n8n MCP.
 4. **Demo reset:** `scripts/demo-reset.ps1`, run by the owner. One transaction, FK order **`event_replays`, `side_effects`, `invoices`, `stripe_events`** (all RESTRICT; the old text omitted `event_replays`), schema untouched.
    It wipes all rows: `stripe trigger` fires about 6 untagged `ignored` events that neither the `evt_test_%` nor the `e2e=true` filter catches, and the data is sandbox only. Guards: refuses if any payload has `livemode=true` or any row is `processing`; `-DryRun`; typed confirmation; a fresh dump first. Prints counts before and after, clears Mailpit through its API, keeps `invoice_number_seq` (e2e counts Mailpit messages by invoice number, and a reused number would break that).
@@ -264,9 +265,20 @@ Acceptance criteria:
 
 ## M7: Public live demo (TODO)
 
+**Constraint from the invoice work:** invoice numbers are sequential and guessable, and an invoice shows a customer name and payment details. M7 must not serve a PDF by invoice number alone: a visitor link needs an unguessable token. The renderer (`Stripe Render Invoice`, input `invoice_number`) is meant to be reused so page and email cannot drift apart; the token check belongs in front of it. Decided in M7's criteria session, not built.
+
 Idea, not yet a plan: a public demo that runs on a free Oracle Cloud Always Free ARM instance behind a Cloudflare Tunnel. A visitor pays with Stripe's test card and watches the event, the invoice and the email appear, then resends the same payment and sees that no second invoice is created.
 It needs rate limiting and a nightly reset (M6b's demo-reset is the likely starting point).
 
 Written down so it is not forgotten; nothing is decided or built. The acceptance criteria are written in their own session, and the session also has to settle:
 - Stripe stays in test mode, so "Nothing goes live" in `CLAUDE.md` and the live-mode checklist wording need a deliberate update, not a silent one.
 - A public endpoint changes the threat model (abuse, cost, what the demo may store); that review comes before any build.
+
+## Invoice design: results
+
+- Workflows 5 -> 7 (`Stripe Render Invoice`, `Stripe Send Telegram`). Processor 37 -> 42 nodes. The Telegram retry chain exists once, in `Stripe Send Telegram`; Send Alert still has its own copy (possible follow-up: reuse Send Telegram there).
+- Migration 006 (run by the owner): `customer_name`, `payment_method`, `line_items` on `invoices`, all-or-none CHECK.
+- The PDF is never stored; it is re-rendered from the row. GoBD archiving of the sent PDF is not built (listed in the README and the live-mode checklist).
+- `TELEGRAM_SEND_PDF` sends customer data to a third party: the GDPR decision is documented in `docs/runbook.md` section 10.
+- Accepted: if PDF rendering and the Telegram text fail in the same run, `last_error` shows the text failure; the next run reports the PDF problem.
+- M6b note: the demo reset and the clean-clone files must cover Gotenberg and the two new workflows (7, not 5, in the import check).
