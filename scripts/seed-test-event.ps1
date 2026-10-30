@@ -38,7 +38,7 @@ $insert = @'
 INSERT INTO stripe_events (event_id, event_type, status, attempts, payload, received_at, claimed_at, pending_since)
 SELECT :'eid', event_type, :'st', :'att'::int, payload,
        now() - make_interval(mins => :'recv'::int),
-       CASE WHEN :'claimed' = '' THEN NULL ELSE now() - make_interval(mins => :'claimed'::int) END,
+       CASE WHEN :'claimed' = '' THEN NULL ELSE now() - make_interval(mins => NULLIF(:'claimed', '')::int) END,   -- NULLIF: '' must not reach ::int, the planner casts both branches
        now() - make_interval(mins => :'pend'::int)
 FROM stripe_events
 WHERE status = 'done' AND event_id NOT LIKE 'evt\_test\_%'

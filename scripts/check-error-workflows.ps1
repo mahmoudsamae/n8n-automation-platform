@@ -1,0 +1,43 @@
+# Fails if a workflow's errorWorkflow setting is wrong. The setting lives only in n8n (the .sdk.ts files cannot carry it),
+# so a workflow recreated from its file would silently lose alerting.
+# Intake, Processor and Monitor must point at the Error Handler; the Error Handler and Send Alert must have none
+# (a failing alert must never trigger another alert).
+# Run: powershell -File scripts\check-error-workflows.ps1 [-ErrorHandlerId <id>]   Exit 0 = all correct, 1 = problem.
+# Prints names and ids only. -ErrorHandlerId lets you prove the failure path without editing a live workflow.
+param([string]$ErrorHandlerId = 'c2NT8k3JGpuS3r6I')
+$ErrorActionPreference = 'Stop'
+
+# id, expected name, expected errorWorkflow ('' = must have none)
+$expected = @(
+    @{ Id = '3j0pWVoxvDY2sdO5'; Name = 'Stripe Intake';        Target = $ErrorHandlerId }
+    @{ Id = 'ylR2t9B0ZAH1cLfq'; Name = 'Stripe Processor';     Target = $ErrorHandlerId }
+    @{ Id = 'yeSlEcPp87vCJT7D'; Name = 'Stripe Monitor';       Target = $ErrorHandlerId }
+    @{ Id = 'c2NT8k3JGpuS3r6I'; Name = 'Stripe Error Handler'; Target = '' }
+    @{ Id = 'WO2ebvkZGK5NxzVo'; Name = 'Stripe Send Alert';    Target = '' }
+)
+
+$failed = 0
+foreach ($w in $expected) {
+    $label = "{0} ({1})" -f $w.Name, $w.Id
+    # The CLI can print warnings before the JSON array, so cut at the first '['.
+    $raw = (@(wsl -d Ubuntu docker exec n8n n8n export:workflow "--id=$($w.Id)" 2>$null) -join "`n")
+    $start = $raw.IndexOf('[')
+    $wf = $null
+    if ($start -ge 0) { try { $wf = @($raw.Substring($start) | ConvertFrom-Json)[0] } catch { $wf = $null } }
+    if (-not $wf) { Write-Host "[FAIL] $label : no workflow JSON from n8n export" -ForegroundColor Red; $failed++; continue }
+    if ($wf.name -ne $w.Name) { Write-Host "[FAIL] $label : live name is '$($wf.name)'" -ForegroundColor Red; $failed++; continue }
+
+    $actual = if ($wf.settings -and $wf.settings.errorWorkflow) { [string]$wf.settings.errorWorkflow } else { '' }
+    if ($actual -eq $w.Target) {
+        $shown = if ($actual) { "errorWorkflow = $actual" } else { 'no errorWorkflow (correct)' }
+        Write-Host "[PASS] $label : $shown" -ForegroundColor Green
+    } else {
+        $want = if ($w.Target) { $w.Target } else { 'none' }
+        $got = if ($actual) { $actual } else { 'none' }
+        Write-Host "[FAIL] $label : errorWorkflow is $got, expected $want" -ForegroundColor Red
+        $failed++
+    }
+}
+
+if ($failed -gt 0) { exit 1 }
+exit 0

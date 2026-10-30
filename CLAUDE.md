@@ -14,9 +14,13 @@ Intake only verifies, classifies and stores (fast). All slow work belongs to the
 - n8n, postgres, mailpit run via docker compose in WSL Ubuntu: `~/n8n/docker-compose.yml`.
   Start: `wsl -d Ubuntu bash -c "cd ~/n8n && docker compose up -d"`.
 - Containers: `n8n` (:5678), `postgres` (127.0.0.1:5432), `mailpit` (UI :8025).
+- Container `postgres-backup` (M5): `pg_dump -Fc` at start and every 24 h into `~/n8n/backups/automation-<UTC timestamp>.dump` (mode 600, root-owned, never in git: it holds customer emails).
+  Temp file + rename; after a failed dump it retries in 5 min; keeps 14 days (prunes only its own `automation-*.dump` after a good dump). Postgres only: n8n's workflows live in SQLite in the `n8n_data` volume.
+  `scripts\restore-check.ps1 [-Fresh]` restores the newest dump into a throwaway container with no network and compares row counts with live.
+  `scripts\check-error-workflows.ps1` checks each workflow's `errorWorkflow` on live n8n; e2e runs both checks.
 - n8n credential: `Postgres automation` (id `XVNN7sIThniqsuOf`). DB and user are both `automation`.
 - Env var NAMES (the compose file only holds `${VAR}` references; real values live in `~/n8n/.env` in WSL, never copy them here):
-  `STRIPE_WEBHOOK_SECRET`, `TELEGRAM_CHAT_ID`, `NODE_FUNCTION_ALLOW_BUILTIN`, `N8N_BLOCK_ENV_ACCESS_IN_NODE`,
+  `STRIPE_WEBHOOK_SECRET`, `TELEGRAM_CHAT_ID`, `ALERT_EMAIL_TO`, `ALERT_EMAIL_FROM`, `HEARTBEAT_URL` (Healthchecks.io ping URL: the UUID is its only credential, treat it as a secret), `NODE_FUNCTION_ALLOW_BUILTIN`, `N8N_BLOCK_ENV_ACCESS_IN_NODE`,
   `GENERIC_TIMEZONE`, `TZ`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`.
 - n8n credential: `Mailpit SMTP` (id `nxXABuEVvevioUzb`; host `mailpit`, port 1025, no auth). Mailpit keeps no history across restarts.
 - n8n credential: `Telegram alerts` (id `kNsPsjXulOh7i4RQ`, Telegram bot). Chat ID is available in workflows as `$env.TELEGRAM_CHAT_ID`.
@@ -48,7 +52,11 @@ The user reviews and runs migrations themselves; Claude never runs them. Check t
   `stuck processing` (`claimed_at` 20+ min old: twice the Processor's 10 min release, so it never races a healthy Processor).
 - Workflow crashes go through the Error Handler: one alert per (workflow | node) per 15 min, state in static data so it works with Postgres down.
 - Replay a dead event: `powershell -File scripts\replay.ps1 -EventId evt_... -Reason "..." [-DryRun]`. Only `failed` events; never touches `side_effects` or `invoices`.
-- Not covered: n8n or WSL down (M5 dead man's switch). An undeliverable error alert still uses up its 15 min throttle window (see PLAN.md known gaps).
+- Dead man's switch (M5): the Monitor's `Heartbeat Ping` node (own branch, placed above the chain so it runs first) GETs `$env.HEARTBEAT_URL` every 5 min; Healthchecks.io (period 5, grace 10) emails the owner after ~15 min of silence,
+  which covers n8n or WSL being down. 3 tries 5 s apart, then the error is absorbed. A green heartbeat does NOT prove Postgres or the Processor work. Pause the check before a planned shutdown.
+- Alert sender and recipient come from `ALERT_EMAIL_FROM` / `ALERT_EMAIL_TO`. The Processor's own sender is still the literal placeholder `stripe-processor@example.test` (live-mode checklist item).
+- Runbook: `docs/runbook.md` (alerts, heartbeat triage, backup/restore, secret rotation, rebuilding n8n). Live-mode steps: `docs/live-mode-checklist.md` (documentation only, never executed).
+- Not covered: an undeliverable error alert still uses up its 15 min throttle window (see PLAN.md known gaps).
 
 ## Decided status rules
 - Intake sets `pending` if type is `checkout.session.completed` AND `payment_status = 'paid'`,
@@ -87,7 +95,15 @@ wsl -d Ubuntu docker exec postgres psql -U automation -d automation -c "select e
 - The SDK files cannot carry workflow settings. `errorWorkflow` (= Error Handler id) is set with `update_workflow` on Intake, Processor and Monitor; each file's header says so.
 - n8n MCP cannot execute a workflow with an Execute Workflow Trigger (Send Alert); prove sub-workflows through a caller. Postgres, n8n and Mailpit timestamps are UTC; the Windows clock is currently UTC+1.
 
+- PowerShell 5.1 prepends a UTF-8 BOM when piping text to `wsl`. psql tolerates it, `sh`/`bash` do not. Send scripts as base64 and decode in WSL
+  (`wsl -d Ubuntu bash -c "echo <b64> | base64 -d | bash"`); see `scripts\restore-check.ps1`. Also, `wsl <cmd>` runs through an outer shell, so `$VAR` and quotes in the command are expanded/split before bash sees them.
+- `docker compose up -d` re-reads `~/n8n/.env`; `restart` does not. Recreating n8n drops the n8n MCP connection for a few seconds.
+- `seed-test-event.ps1`: a seeded row has no `claimed_at` unless you pass `-ClaimedMinutesAgo`; a `processing` row defaults to claimed now.
+
 ## Rules
+- Only ONE agent at a time may run `scripts/e2e.ps1` or touch the live stack (containers, n8n workflows, Postgres rows, Mailpit, the Stripe CLI). Parallel agents, e.g. in worktrees, work on files only.
+  Why: e2e starts `stripe listen`, creates events and counts side effects, and a container recreate or `docker stop` mid-run fails the other agent's checks (this happened on 2026-10-30 during M5).
+  Before taking the stack, check nobody else holds it (`Get-Process stripe`, recent `stripe_events` rows).
 - Missing or invalid required data => mark the event `failed` with a clear `last_error`. Never substitute a default or fallback value.
 - Any table holding financial or legal records uses `ON DELETE RESTRICT`, never CASCADE.
 - Task specs live in `docs/tasks/` (long pasted prompts get truncated). Point to the file instead of pasting.
@@ -95,4 +111,4 @@ wsl -d Ubuntu docker exec postgres psql -U automation -d automation -c "select e
 - Never print or log secrets (signing secrets, tokens, DB passwords). Redact `whsec_` before showing any output.
 - Ask before deleting files, rewriting git history, or running DB migrations (schema changes need approval).
 - Before declaring any workflow change done, run `scripts/e2e.ps1` and show the summary.
-- Stripe is test mode only until M5.
+- Stripe stays in sandbox permanently (portfolio project). Nothing goes live; the live-mode checklist is documentation for a hypothetical client.
