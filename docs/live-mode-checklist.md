@@ -52,6 +52,8 @@ deployment would have to change, and how to check each item. Every item needs a 
   Verify: `docker port gotenberg` prints nothing, `docker inspect gotenberg` shows the memory limit.
 - [ ] **Adaptive Pricing and presentment currency.** If the client's Stripe account shows prices in the buyer's currency, the session currency can differ from what the invoice should show. The pipeline fails an event whose session amount or currency differs from the event (it never guesses); decide the policy for the client.
   Verify: a test payment from another country either invoices correctly or fails with the clear `last_error`.
+- [ ] **n8n execution data holds customer data.** Stored executions keep invoice rows, customer names and emails, and the rendered PDF for as long as n8n keeps them, which is separate from the database retention above. Set an explicit execution retention (`EXECUTIONS_DATA_MAX_AGE`, and decide whether to save successful runs) and cover it in the privacy notice.
+  Verify: the setting is in the client's `.env` and an execution older than the limit is gone.
 - [ ] **Remove test data:** `evt_test_%` rows, `e2e=true` events, the Mailpit inbox.
   Verify: `select count(*) from stripe_events where event_id like 'evt\_test\_%'` is 0. Delete order: `event_replays`, `side_effects`, `invoices`, `stripe_events`.
 
