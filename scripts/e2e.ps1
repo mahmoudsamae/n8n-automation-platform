@@ -112,6 +112,11 @@ try {
     Write-Step 'Postgres backup: non-empty dump younger than 25 h' $false $_.Exception.Message
 }
 
+# M5 follow-up: e2e's own psql calls use the trusted local socket, so a wrong POSTGRES_PASSWORD would pass everything above while
+# every backup failed. This authenticates over TCP from the backup container with the .env password and reads its last log line.
+& "$PSScriptRoot\check-backup-health.ps1"
+Write-Step 'Postgres backup authenticates over TCP and its last log line is not backup FAILED' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
+
 # M5: the n8n container must have the alert addresses and the heartbeat URL (presence only, values are never printed).
 $envScript = 'for k in HEARTBEAT_URL ALERT_EMAIL_TO ALERT_EMAIL_FROM; do v=$(docker exec n8n printenv $k); if [ -n "$v" ]; then echo "$k=set"; else echo "$k=EMPTY"; fi; done'
 $envOut = @(wsl -d Ubuntu bash -c ("echo " + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($envScript)) + " | base64 -d | bash")) |
