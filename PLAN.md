@@ -11,6 +11,7 @@ Pipeline: Stripe -> Intake -> `stripe_events` -> Processor -> Mailpit + Telegram
 | M5 | Hardening: secret rotation procedure, Postgres backup, live-mode checklist, runbook, external dead man's switch (Monitor pings an outside heartbeat service; silence triggers the alert, covering n8n/WSL down), e2e check that each workflow's `errorWorkflow` setting is correct (it lives only in n8n, not in the `.sdk.ts` files, so a workflow recreated from its file would silently lose alerting): Intake, Processor and Monitor must point at the Error Handler id, and the Error Handler and Send Alert must have none; replace the placeholder alert addresses (`ops@example.test` recipient, `stripe-alerts@example.test` sender in `Stripe Send Alert`) with real ones | DONE, merged (PR #2, review follow-up PR #3). All proofs recorded, `scripts/e2e.ps1` 41/41 (see "Results" in the M5 section). Known gaps listed there carry into M6 |
 | M6a | Portfolio packaging, part 1: README reviewed and updated for M5, `docs/evidence.md`, stale-timestamp check, new proofs, case study (EN/DE) | IN REVIEW: PR open on `m6a-portfolio-readme`, not merged. `scripts/e2e.ps1` 42/42 (see "Results" in the M6 section) |
 | M6b | Portfolio packaging, part 2: Mailpit volume, daily n8n export, clean-clone files and check, demo reset, `DEMO.md` | NEXT, after M6a is merged |
+| M7 | Public live demo (see the M7 section) | TODO. Criteria are written in their own session, not before |
 
 ## M3: Stripe Processor
 
@@ -260,3 +261,12 @@ Acceptance criteria:
 6. **`DEMO.md`:** a 2-minute script with timestamps, exact commands, what is on screen, and a marked cut for the Processor's wait of up to 60 s; rehearsed once with a stopwatch. `stripe listen` prints `whsec_` on STDERR, so redirect it to a file; never on screen: the heartbeat URL, the Telegram chat ID, `ALERT_EMAIL_TO` in Mailpit. The owner records the video.
 7. **Public repo (flipped by the owner after M6a, before M6b):** a rendered-README check while logged out, including the Mermaid diagrams, as soon as it is public; when M6b lands, the README's "Setup" limit is replaced by the verified setup steps and the history scan is repeated.
 8. **Done means:** e2e summary shown, runbook section 8 and known limits updated, PLAN.md and CLAUDE.md updated, M6 marked done.
+
+## M7: Public live demo (TODO)
+
+Idea, not yet a plan: a public demo that runs on a free Oracle Cloud Always Free ARM instance behind a Cloudflare Tunnel. A visitor pays with Stripe's test card and watches the event, the invoice and the email appear, then resends the same payment and sees that no second invoice is created.
+It needs rate limiting and a nightly reset (M6b's demo-reset is the likely starting point).
+
+Written down so it is not forgotten; nothing is decided or built. The acceptance criteria are written in their own session, and the session also has to settle:
+- Stripe stays in test mode, so "Nothing goes live" in `CLAUDE.md` and the live-mode checklist wording need a deliberate update, not a silent one.
+- A public endpoint changes the threat model (abuse, cost, what the demo may store); that review comes before any build.

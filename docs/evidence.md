@@ -56,7 +56,11 @@ Found by that same bug and then measured on purpose with `-AgeSeconds -3600`: a 
 [FAIL] the stale event was not stored - found 1
 ```
 
-Intake only tests `age > 300` ([`stripe-intake.sdk.ts`](../stripe-intake.sdk.ts), node `Verify Signature and Classify`), so the replay window is one-sided. Stripe's own libraries reject both directions. Exploiting this needs the signing secret, because a captured request cannot be re-dated without invalidating its signature, so I rate the impact low. It is listed under known limits and was not changed in M6a.
+Intake only tests `age > 300` ([`stripe-intake.sdk.ts`](../stripe-intake.sdk.ts), node `Verify Signature and Classify`), so the replay window is one-sided.
+
+This matches the reference library, so it is not a deviation from Stripe's own check. Read on 2026-10-30: [`stripe-node`'s `Webhooks.ts`](https://github.com/stripe/stripe-node/blob/master/src/Webhooks.ts) computes `timestampAge = now - details.timestamp` and rejects only when `tolerance > 0 && timestampAge > tolerance`, so a future timestamp gives a negative age and passes there too. [Stripe's webhook docs](https://docs.stripe.com/webhooks) (section on preventing replay attacks) say to compare the difference between the current and the received timestamp with a tolerance, 5 minutes by default; they do not say the check must be two-sided. Library source changes, so re-read it before relying on this.
+
+Whether Stripe's other official libraries behave the same was not checked. I rate the impact low by construction: the signature covers the timestamp, so a captured request cannot be re-dated without invalidating it, and a future-dated request needs the signing secret. It is listed under known limits and was not changed in M6a.
 
 ### Duplicate event: 200 duplicate, 1 row
 
