@@ -32,3 +32,39 @@ Product for demo payments: "Workshop: Automatisierung mit n8n", 30,00 EUR.
 
 Plan first and wait for my approval.
 
+
+
+
+
+\## Design v2 (approved by owner, 2026-10-30)
+
+
+
+Layout follows DIN 5008 conventions, modernized:
+
+1\. Logo: an original inline SVG monogram "M" (rounded square #1e3a5f, M stroke #5dcaa5), next to "Musterwerk" and the tagline "Workshops für Automatisierung". Inline only, no remote assets, so the CSP stays strict.
+
+2\. Small sender line above the recipient: "Musterwerk · Musterstraße 1 · 12345 Musterstadt".
+
+3\. Recipient left (name, email). Information block right: Rechnungs-Nr., Rechnungsdatum, Leistungsdatum, Zahlungsart.
+
+4\. Heading "Rechnung", short greeting, then the line-item table with a dark header row (Pos., Beschreibung, Menge, Einzelpreis, Gesamt).
+
+5\. Totals block right-aligned: Nettobetrag, "zzgl. 19 % USt.", Gesamtbetrag. Stripe's total is gross. Compute net = round(gross / 1.19) in cents and VAT = gross - net, so net + VAT always equals the total exactly. Test it for 3000 (2521 + 479) and several other amounts, including odd cents and a zero-decimal currency.
+
+6\. A green "Bezahlt" badge in the header and a line "Der Betrag wurde am <date> per <payment method> beglichen. Es ist nichts mehr zu zahlen."
+
+7\. Footer in three columns: address, contact, and the demo note "Portfolio-Demo, Stripe-Sandbox. Keine Rechnung i. S. d. § 14 UStG." Then the Referenz line. No IBAN, no tax number, no USt-IdNr, not even fake ones: invented official-looking numbers must not appear.
+
+8\. The HTML email uses the same identity (logo, colors, totals), the plain-text part stays.
+
+9\. Keep all escaping and the CSP. The hostile-name proof must still pass.
+
+
+
+Also: keep the improved last\_error from Describe Failure, but prove that rk\_ keys are still redacted in it.
+
+
+
+After the change, show me the new PDF and email screenshots again before the proofs.
+
