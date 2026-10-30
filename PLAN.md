@@ -8,7 +8,7 @@ Pipeline: Stripe -> Intake -> `stripe_events` -> Processor -> Mailpit + Telegram
 | M2 | Stripe Intake workflow: signature check, classify, idempotent insert, 200/400/500 contract. Proven with stripe CLI, including DB-down 500 | DONE |
 | M3 | Stripe Processor workflow (below) | DONE. `scripts/e2e.ps1` guards it. Known gap: real Telegram 429/5xx never provoked, backoff is unproven (needed for M6 failure table) |
 | M4 | Failure visibility (below): error workflow, alert when an event ends `failed`, safe way to replay a failed event | DONE, merged (PR #1). Proofs run (see the M4 section); `scripts/e2e.ps1` 35/35. Known gaps (carry into the M6 failure table): see "Known gaps" in the M4 section |
-| M5 | Hardening: secret rotation procedure, Postgres backup, live-mode checklist, runbook, external dead man's switch (Monitor pings an outside heartbeat service; silence triggers the alert, covering n8n/WSL down), e2e check that each workflow's `errorWorkflow` setting is correct (it lives only in n8n, not in the `.sdk.ts` files, so a workflow recreated from its file would silently lose alerting): Intake, Processor and Monitor must point at the Error Handler id, and the Error Handler and Send Alert must have none; replace the placeholder alert addresses (`ops@example.test` recipient, `stripe-alerts@example.test` sender in `Stripe Send Alert`) with real ones | TODO, NEXT. First step: write the M5 acceptance criteria (like M4's) and get approval before building |
+| M5 | Hardening: secret rotation procedure, Postgres backup, live-mode checklist, runbook, external dead man's switch (Monitor pings an outside heartbeat service; silence triggers the alert, covering n8n/WSL down), e2e check that each workflow's `errorWorkflow` setting is correct (it lives only in n8n, not in the `.sdk.ts` files, so a workflow recreated from its file would silently lose alerting): Intake, Processor and Monitor must point at the Error Handler id, and the Error Handler and Send Alert must have none; replace the placeholder alert addresses (`ops@example.test` recipient, `stripe-alerts@example.test` sender in `Stripe Send Alert`) with real ones | DONE on branch `m5-hardening` (pushed, not merged). All proofs recorded, `scripts/e2e.ps1` 40/40; proof 1b down 10:28:28 / up 10:33:28 Berlin time, proof 6 Postgres rotation (see "Results" in the M5 section). Known gaps listed there carry into M6 |
 | M6 | Portfolio packaging: README with architecture diagram, failure scenarios with proof, 2-minute demo script | TODO |
 
 ## M3: Stripe Processor
@@ -124,6 +124,81 @@ and a replay script that safely sends a failed event back to the Processor.
 - Monitoring of the platform itself: all alerting lives inside n8n, so if n8n or WSL is down nothing alerts.
   Covered by the M5 external dead man's switch.
 
+## M5: Hardening
+
+Stripe stays in sandbox forever; the live-mode checklist is documentation for a hypothetical client deployment. No schema change, no migration.
+Split if time runs out: criteria 1-6 first, 7-9 as M5b. Build order: 3, 4 (code only until the user confirms the `.env` lines), 5, 6, then 1-2, 7-9.
+
+### Findings that shaped the design
+- A ping at the end of the Monitor chain never fires on a quiet run (the chain stops at `Find Alertable Events` with 0 rows), so the ping is a second branch off the trigger.
+- The stack is not always on (PC off at night), so a fixed-time backup job would be missed and every shutdown looks like an outage to a heartbeat service.
+- `n8n export:workflow` returns `settings.errorWorkflow` without an API key. n8n uses SQLite in the `n8n_data` volume, so a Postgres backup does not cover workflows or credentials.
+- A third placeholder address exists: `stripe-processor@example.test` in `stripe-processor.sdk.ts`.
+
+### Who does what
+- **User:** Healthchecks.io free account; check `stripe-pipeline` (period 5 min, grace 10 min, email integration on); three `.env` lines in WSL
+  (`HEARTBEAT_URL`, `ALERT_EMAIL_TO`, `ALERT_EMAIL_FROM`); the Postgres password rotation rehearsal; reporting the down/up email times; Pause the check before shutting the PC down.
+- **Claude:** workflow and compose changes, scripts, e2e checks, docs, exports and diffs, CLAUDE.md / PLAN.md updates.
+
+### Acceptance criteria
+1. **Dead man's switch:** `Stripe Monitor` gets an HTTP node `Heartbeat Ping` on a second branch from the schedule trigger, GET `$env.HEARTBEAT_URL`, 10 s timeout,
+   3 tries 5 s apart, then the error is absorbed (`continueRegularOutput`) so a ping failure never crashes the Monitor. Deliberate exception to exponential backoff:
+   n8n's retry wait is fixed, the ping is harmless to repeat, and the 10 min grace tolerates misses. About 15 min of silence makes Healthchecks.io email the user.
+   A green heartbeat proves n8n's scheduler and network only, not Postgres or the Processor. A shutdown without Pause costs one down email and one up email.
+2. **Ping URL handling:** the UUID is the only credential. It lives only in `~/n8n/.env`; compose and the `.sdk.ts` hold only a reference. Never in git, alerts or chat. No fallback URL.
+3. **`errorWorkflow` guard:** `scripts/check-error-workflows.ps1`, called from e2e, reads the 5 workflows via `n8n export:workflow`. Intake, Processor, Monitor must equal the Error Handler id;
+   Error Handler and Send Alert must have none. Missing setting, wrong id or no JSON = FAIL. Prints names and ids only. A parameter overrides the expected id to prove the failure path.
+4. **Alert addresses:** `Stripe Send Alert` reads `$env.ALERT_EMAIL_TO` / `$env.ALERT_EMAIL_FROM` (keeps personal addresses out of git; a client deployment changes config only).
+   e2e fails if either variable or `HEARTBEAT_URL` is empty in the n8n container (presence only, never values). The Processor sender stays and goes on the live-mode checklist.
+5. **Postgres backup:** compose service `postgres-backup` (`postgres:17-alpine`) runs `pg_dump -Fc` at start and every 24 h into `~/n8n/backups/`, via temp file + rename.
+   Keeps 14 days; pruning runs only after a successful dump and only matches its own filename pattern (approved by the user). Backups stay out of the repo (customer emails).
+   e2e fails if the newest dump is empty or older than 25 h.
+6. **Restore proven:** `scripts/restore-check.ps1` restores the newest dump into a throwaway container with no network, compares row counts of `stripe_events`, `side_effects`,
+   `invoices`, `event_replays` and `invoice_number_seq` against live, then removes the container. Run while no events are flowing.
+7. **Secret rotation:** runbook steps for `STRIPE_WEBHOOK_SECRET`, `POSTGRES_PASSWORD`, the Telegram bot token and `HEARTBEAT_URL`, with the traps: `POSTGRES_PASSWORD` in `.env` only applies on first
+   volume creation (needs `ALTER USER`), and the database, the n8n credential and the backup container must change together. Only the Postgres rotation is rehearsed (by the user).
+8. **Runbook and live-mode checklist:** `docs/runbook.md` (start/stop and Pause, each alert kind, heartbeat-down triage, replay, backup/restore, rotation, rebuilding n8n from `.sdk.ts`)
+   and `docs/live-mode-checklist.md` ("hypothetical client deployment, never executed"; each item has a how-to-verify line).
+9. **Source of truth:** `stripe-monitor.sdk.ts` and `stripe-send-alert.sdk.ts` exported and diffed; Monitor sticky note updated; compose synced with `C:\dev\claude-config\sync.ps1`;
+   CLAUDE.md gets the new env var names and scripts, and "test mode only until M5" becomes "sandbox permanently"; this M5 row marked done.
+
+### Proof required (commands and output shown)
+1. Heartbeat: (a) 2 Monitor runs show `OK`, check green; (b) `wsl --shutdown`, user reports the down email time (~15 min) and the up email after restart;
+   (c) `docker stop postgres` 6 min: pings continue, one throttled Error Handler alert; (d) unresolvable `HEARTBEAT_URL`: Monitor run still `success`, no Error Handler alert, then restore it.
+2. Guard passes on live; with a wrong expected id it prints FAIL.
+3. A dead `evt_test_` row produces a Mailpit alert using the env-var From/To; no `example.test` left in `stripe-send-alert.sdk.ts`; test row deleted.
+4. Backup: dump appears at container start; a failed dump (postgres stopped) leaves no new file.
+5. `restore-check.ps1` output shows matching counts.
+6. After the user's rotation: a real `stripe trigger` event ends `done`, a new dump succeeds, the old password is rejected.
+7. Repo grep for `hc-ping.com/<uuid>` and `whsec_` finds nothing.
+8. `scripts/e2e.ps1` summary shown, with the new checks.
+
+### Results (2026-10-30)
+All times are Europe/Berlin (CET, UTC+1) with UTC in parentheses. Healthchecks.io's event log is in Berlin time; n8n, Postgres and Mailpit are UTC.
+- **Proof 1a** done: Monitor executions 385 and 391 both show `Heartbeat Ping` -> `{"data":"OK"}`; `Heartbeat Ping` has executionIndex 1, before `Find Alertable Events` (2), because n8n orders branches by canvas position. **Confirmed by the user** from Healthchecks.io's own event log: pings at 09:38 (08:38 UTC), 09:43 (08:43 UTC), 09:53 (08:53 UTC), 09:58 (08:58 UTC) and 10:03 (09:03 UTC). The first two match executions 385 (09:38:26 / 08:38:26 UTC) and 391 (09:43:26 / 08:43:26 UTC); 09:53 (08:53 UTC) and 09:58 (08:58 UTC) are covered under proof 1c, and 10:03 (09:03 UTC) is the first after Postgres came back. Claude cannot see that side; this is the user's report.
+- **Proof 1b** done (user report). Last ping about 10:13 (09:13 UTC); Healthchecks.io changed the check to **down at 10:28:28 (09:28:28 UTC)** (= last ping + period 5 + grace 10 min) and sent the down email. The laptop then rebooted on its own (not planned), the stack was back at about 10:31 (09:31 UTC) and all four containers were already running before `docker compose up -d` was typed (restart policies work). Healthchecks.io changed the check back to **up at 10:33:28 (09:33:28 UTC)** (user report; this is the status-change time, the up email follows it). n8n's side agrees: the Monitor's last run before the outage was 10:13:26 (09:13:26 UTC) and the next one 10:33:26 (09:33:26 UTC) (executions 456 and 462; none in between), so recovery took 2 s from the first ping. Caveat: the outage ended in an unplanned reboot, so this exercised "no pings for 15 min" (the case that matters), not the `wsl --shutdown` command by itself.
+- **Proof 1c** done: Postgres stopped 09:52:30-09:58:51 (08:52:30-08:58:51 UTC). Both Monitor runs (414 at 09:53:26 / 08:53:26 UTC, 427 at 09:58:26 / 08:58:26 UTC) ended `error` with the heartbeat OK. The Error Handler ran 9 times (7 Processor, 2 Monitor) and sent 2 emails: one per (workflow, node), not one in total as the criterion text said. **Confirmed from outside by the user:** Healthchecks.io logged the 09:53 (08:53 UTC) and 09:58 (08:58 UTC) pings, which arrived while Postgres was down.
+- **Proof 1d** done: `HEARTBEAT_URL` overridden from the shell (`.env` untouched) with an unresolvable host. Monitor execution 406 (09:48:26 / 08:48:26 UTC) ended `success`, the DNS error is in its data, no Error Handler execution and no crash email. Real URL restored and verified. **Confirmed from outside by the user:** the 09:48 (08:48 UTC) ping is missing from the Healthchecks.io event log, matching this test (the 3 tries failed on DNS and the error was absorbed).
+- **Proof 2** done: guard passes on live (5/5) and prints FAIL for the three protected workflows with a wrong id (exit 1).
+- **Proof 3** done: seeded dead `evt_test_alert_addr` at 09:33:15 (08:33:15 UTC); the alert arrived 12 s later (09:33:27 / 08:33:27 UTC) with From/To from the env vars, none `example.test`. `stripe-send-alert.sdk.ts` has no `example.test` left. The Processor's `stripe-processor@example.test` remains (live-mode checklist item). Test row deleted in FK order.
+- **Proof 4** done: first dump at container start; with Postgres stopped, `backup FAILED` and no new file; the 5-minute retry was then observed (failed ~09:31:11 (08:31:11 UTC), new dump 09:36:11 (08:36:11 UTC), no manual action).
+- **Proof 5** done: `restore-check.ps1 -Fresh` restored into a throwaway container with no network, all five counts match live. The mismatch path was also proven: a row seeded after the dump gave `[FAIL] stripe_events live=94 restored=93`, exit 1 (row deleted after).
+- **Proof 6** done (rotation performed by the user, verification by Claude, no secret printed). User procedure: fresh backup, new password into a temp file, `ALTER USER` via a psql variable, `.env` updated with `sed`, n8n credential updated via `clip.exe` and tested, `postgres-backup` recreated (this also recreated `postgres`), temp file shredded. Window: 3 failed executions (Processor 10:43:37 and 10:44:37, Monitor 10:43:26; 09:43:37, 09:44:37 and 09:43:26 UTC), every Processor run from 10:46 (09:46 UTC) succeeded. Verified: `.env`, the `postgres` container and the `postgres-backup` container hold the same value; the new password is accepted over TCP from another container and a wrong one gets `password authentication failed`; `scripts/e2e.ps1` 40/40 with a real `stripe trigger` event ending `done` through the new n8n credential; `restore-check.ps1 -Fresh` dumped over TCP with the new password and restored with matching counts (114/46/23/1, sequence 23). The first automatic dump after the recreate failed at 10:45:07 (09:45:07 UTC) ("database system is starting up") and the 5-minute retry design covers it. **Not proven:** the OLD password cannot be tested (it no longer exists); its rejection rests on `ALTER USER` semantics.
+- **Correction found while verifying proof 6:** the runbook's TCP check (`docker exec postgres ... psql -h 127.0.0.1`) could never fail, because pg_hba trusts loopback inside the postgres container (a wrong password was accepted there). Runbook section 7 now tests from another container. Runbook section 7 also gained the two-login-role pattern as the recommendation for a real client (not built).
+- **Proof 7** done: no ping URL, `whsec_` or bot token in either repo's files or in git history. The old ping URL was printed once into the Claude session by a shell-quoting mistake, so it was rotated following runbook section 7: new check created, `.env` updated, n8n recreated (`HEARTBEAT_URL` verified set without printing it), **the user confirmed the new check is green and the old one is deleted**. This also exercised the `HEARTBEAT_URL` rotation steps once; the Telegram token and `STRIPE_WEBHOOK_SECRET` steps remain unrehearsed.
+- **Proof 8** done: `scripts/e2e.ps1` 40/40.
+- Side finding fixed: `seed-test-event.ps1` failed without `-ClaimedMinutesAgo` (`''::int` is evaluated while planning); now NULL-safe.
+
+### Known gaps after M5 (carry into the M6 failure table)
+- A green heartbeat does not prove Postgres or the Processor work.
+- Backups sit on the same disk as the database: protects against bad data and a lost volume, not a lost machine.
+- `n8n_data` is not backed up until the M6 export (item 8); credentials are never exported.
+- A forgotten Pause means one false down email.
+- Both alert channels failing at once (M4) and real Telegram 429/5xx backoff (M3) stay unproven.
+
+### Out of scope
+Off-site backups, automating Healthchecks.io through its API, the Mailpit volume (M6.7), real Stripe live mode.
+
 ## M6: Portfolio packaging
 
 Starts after M3 (M4 and M5 can finish first). Only claims backed by evidence from real runs go in.
@@ -148,3 +223,7 @@ Starts after M3 (M4 and M5 can finish first). Only claims backed by evidence fro
 7. **Mailpit volume:** add a named volume for Mailpit in `~/n8n/docker-compose.yml` (with `MP_DATABASE` pointing into it) so the inbox
    survives `docker restart`/`compose down`. Today a restart wipes it, which hid emails during the M3 Mailpit-down proof.
    Keep the compose copy in `C:\dev\claude-config\n8n\` in sync by running `C:\dev\claude-config\sync.ps1` (it refuses literal secrets).
+8. **Daily n8n export:** the Postgres backup (M5) does not cover n8n, which keeps workflows in SQLite in the `n8n_data` volume. Add a daily export of all workflows,
+   including their settings (`errorWorkflow` etc.), into `~/n8n/backups/` next to the Postgres dumps, with the same temp-file-then-rename and 14-day pruning of its own filename pattern.
+   Credentials are NOT exported (no `--decrypted`, no secrets on disk); the runbook lists the three credentials to re-create by hand. Prove it by restoring the export into a throwaway n8n
+   container and showing the 5 workflows and their `errorWorkflow` values; `scripts/check-error-workflows.ps1` can run against the export.

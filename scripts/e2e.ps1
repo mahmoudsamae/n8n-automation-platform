@@ -99,6 +99,27 @@ try {
     Write-Step 'migration 005 applied (alerted_at, pending_since, event_replays)' $false $_.Exception.Message
 }
 
+# M5: errorWorkflow lives only in n8n (not in the .sdk.ts files), so check it on the live workflows.
+& "$PSScriptRoot\check-error-workflows.ps1"
+Write-Step 'errorWorkflow correct on all 5 workflows' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
+
+# M5: the newest Postgres dump must exist, be non-empty and be younger than 25 h (the backup container dumps at start and every 24 h).
+try {
+    $dumps = @(wsl -d Ubuntu bash -c "docker exec postgres-backup find /backups -maxdepth 1 -name 'automation-*.dump' -size +0c -mmin -1500") |
+        ForEach-Object { "$_".Trim() } | Where-Object { $_ }
+    Write-Step 'Postgres backup: non-empty dump younger than 25 h' ($dumps.Count -ge 1) "$($dumps.Count) recent dump(s)"
+} catch {
+    Write-Step 'Postgres backup: non-empty dump younger than 25 h' $false $_.Exception.Message
+}
+
+# M5: the n8n container must have the alert addresses and the heartbeat URL (presence only, values are never printed).
+$envScript = 'for k in HEARTBEAT_URL ALERT_EMAIL_TO ALERT_EMAIL_FROM; do v=$(docker exec n8n printenv $k); if [ -n "$v" ]; then echo "$k=set"; else echo "$k=EMPTY"; fi; done'
+$envOut = @(wsl -d Ubuntu bash -c ("echo " + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($envScript)) + " | base64 -d | bash")) |
+    ForEach-Object { "$_".Trim() } | Where-Object { $_ }
+foreach ($k in 'HEARTBEAT_URL', 'ALERT_EMAIL_TO', 'ALERT_EMAIL_FROM') {
+    Write-Step "n8n container has $k" ($envOut -contains "$k=set")
+}
+
 # Two listeners would forward every event twice and skew the duplicate checks.
 $existing = Get-Process -Name stripe -ErrorAction SilentlyContinue
 Write-Step 'no other stripe CLI process running' (-not $existing) $(if ($existing) { 'stop it first (it may be a stripe listen)' } else { '' })

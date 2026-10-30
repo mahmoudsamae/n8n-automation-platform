@@ -14,6 +14,30 @@ const everyFiveMinutes = trigger({
   output: [{}],
 });
 
+// Dead man's switch: a second branch off the trigger, placed ABOVE the alert chain (y 240 < 400) so n8n runs it first and a
+// Postgres failure in the chain cannot suppress it. GET on the Healthchecks.io ping URL; the URL is the only credential, so it
+// lives in ~/n8n/.env (HEARTBEAT_URL) and never in this file. 3 tries 5 s apart (n8n's retry wait is fixed, not exponential:
+// the ping is harmless to repeat and the 10 min grace tolerates misses), then the error is absorbed (continueRegularOutput)
+// so a ping failure never crashes the Monitor or fires the Error Handler.
+const heartbeatPing = node({
+  type: 'n8n-nodes-base.httpRequest',
+  version: 4.5,
+  config: {
+    name: 'Heartbeat Ping',
+    parameters: {
+      method: 'GET',
+      url: expr('{{ $env.HEARTBEAT_URL }}'),
+      options: { timeout: 10000 },
+    },
+    retryOnFail: true,
+    maxTries: 3,
+    waitBetweenTries: 5000,
+    onError: 'continueRegularOutput',
+    position: [420, 240],
+  },
+  output: [{ data: 'OK' }],
+});
+
 // Three kinds of event that need a human. All skip rows already alerted (alerted_at set).
 //   dead          failed and attempts >= 5: the Processor will never retry it.
 //   stale_pending pending for 10+ min since pending_since: the Processor is not picking events up.
@@ -130,12 +154,14 @@ const markAlerted = node({
 });
 
 const note = sticky(
-  '## Stripe Monitor\nEvery 5 min: finds events that need a human and sends ONE alert listing up to 10 of them (oldest first; the rest are picked up on the next run).\n\n- **dead**: failed with attempts >= 5 (never retried again). Alert includes the replay command.\n- **stale pending**: pending for 10+ min, measured from `pending_since` (not `received_at`, so a row just released by stuck-row recovery or just replayed is not stale).\n- **stuck failed**: failed with attempts < 5 and `COALESCE(claimed_at, pending_since)` older than 10 min. The Processor retries these every minute, so the Processor is probably not running.\n\n**Idempotency:** `alerted_at` is set only AFTER the alert was delivered (at-least-once). A crash between sending and `Mark Alerted` can send one alert twice. The Processor clears `alerted_at` when it claims a row again, so a later stuck episode alerts again.\n\n- **stuck processing**: `processing` with `claimed_at` older than 20 min (twice the Processor\'s 10 min release, so a healthy Processor always releases first).\n\n**Not covered:** if n8n or WSL is down nothing alerts here (M5: external dead man\'s switch).',
+  '## Stripe Monitor\nEvery 5 min: finds events that need a human and sends ONE alert listing up to 10 of them (oldest first; the rest are picked up on the next run).\n\n- **dead**: failed with attempts >= 5 (never retried again). Alert includes the replay command.\n- **stale pending**: pending for 10+ min, measured from `pending_since` (not `received_at`, so a row just released by stuck-row recovery or just replayed is not stale).\n- **stuck failed**: failed with attempts < 5 and `COALESCE(claimed_at, pending_since)` older than 10 min. The Processor retries these every minute, so the Processor is probably not running.\n- **stuck processing**: `processing` with `claimed_at` older than 20 min (twice the Processor\'s 10 min release, so a healthy Processor always releases first).\n\n**Idempotency:** `alerted_at` is set only AFTER the alert was delivered (at-least-once). A crash between sending and `Mark Alerted` can send one alert twice. The Processor clears `alerted_at` when it claims a row again, so a later stuck episode alerts again.\n\n**Heartbeat (dead man\'s switch):** `Heartbeat Ping` is a separate branch off the trigger, placed ABOVE the alert chain so it runs first and a Postgres failure in the chain cannot suppress it. It GETs `$env.HEARTBEAT_URL` (Healthchecks.io, period 5 min, grace 10 min) on every run; about 15 min of silence makes Healthchecks.io email the owner, which covers n8n or WSL being down. 3 tries 5 s apart (n8n\'s retry wait is fixed, not exponential; the ping is harmless to repeat), then the error is absorbed so a ping failure never crashes the Monitor. A green heartbeat proves n8n\'s scheduler and network only, NOT Postgres or the Processor. The URL is the only credential: it lives in `~/n8n/.env`, never in this file. Pause the check before a planned shutdown.',
   [],
-  { color: 4, position: [200, 40], width: 900, height: 330 },
+  { color: 4, position: [200, -360], width: 900, height: 330 },
 );
 
 export default workflow('stripe-monitor', 'Stripe Monitor')
+  .add(everyFiveMinutes)
+  .to(heartbeatPing)
   .add(everyFiveMinutes)
   .to(findAlertable)
   .to(buildAlert)

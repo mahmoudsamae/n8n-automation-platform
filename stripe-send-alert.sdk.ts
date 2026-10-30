@@ -209,8 +209,8 @@ const sendEmail = node({
     name: 'Alert Email',
     parameters: {
       operation: 'send',
-      fromEmail: 'stripe-alerts@example.test',
-      toEmail: 'ops@example.test',
+      fromEmail: expr('{{ $env.ALERT_EMAIL_FROM }}'),
+      toEmail: expr('{{ $env.ALERT_EMAIL_TO }}'),
       subject: expr("[Stripe alert] {{ $('Prepare Alert').first().json.subject }}"),
       emailFormat: 'text',
       text: expr("{{ $('Prepare Alert').first().json.body }}"),
@@ -220,7 +220,7 @@ const sendEmail = node({
     onError: 'continueErrorOutput',
     position: [2420, 560],
   },
-  output: [{ accepted: ['ops@example.test'] }],
+  output: [{ accepted: ['ops@alerts.invalid'] }],
 });
 
 const emailOk = node({
