@@ -2,8 +2,6 @@
 
 A pipeline of five n8n workflows that turns Stripe payment events into invoices plus email and Telegram notifications. It stores every event before acknowledging it, creates one invoice per paid event, and makes failures visible: dead or stuck events raise alerts, and a failed event can be replayed with an audit trail.
 
-**Stripe sandbox only.** It runs on my machine in Docker, email goes to a local Mailpit inbox, and nothing is live. A real deployment would need the changes in [`docs/live-mode-checklist.md`](docs/live-mode-checklist.md), which I wrote but never executed.
-
 What I can show, each with the output behind it in [`docs/evidence.md`](docs/evidence.md):
 
 - **No double invoice or message.** Resending a Stripe event, or running the Processor again on the same event, leaves exactly 1 invoice, 1 email and 1 Telegram message. [Checked on every e2e run.](docs/evidence.md#duplicate-event-200-duplicate-1-row)
@@ -13,6 +11,19 @@ What I can show, each with the output behind it in [`docs/evidence.md`](docs/evi
 - **42 end-to-end checks** run through one script after every change (by hand; there is no CI): [`scripts/e2e.ps1`](scripts/e2e.ps1).
 
 What I could not prove is listed just as plainly: [known limits](#known-limits) and [not proven](docs/evidence.md#not-proven).
+
+## Screenshots
+
+![Healthchecks.io check going down after about 15 minutes without a ping, then up again](docs/img/healthchecks-down-up.png)
+*The outside heartbeat: down after about 15 minutes of silence, up again when the stack returned.*
+
+![Invoice email in the Mailpit inbox](docs/img/mailpit-invoice.png)
+*The invoice email for a paid event, in the local Mailpit inbox.*
+
+![Alert message in Telegram](docs/img/telegram-alert.png)
+*A pipeline alert as it arrives in Telegram.*
+
+This runs in Stripe's sandbox only, on my own machine; what a real deployment would still need is in the [live-mode checklist](docs/live-mode-checklist.md).
 
 ```mermaid
 flowchart LR
@@ -151,4 +162,8 @@ Labels: **e2e** is asserted on every run of [`scripts/e2e.ps1`](scripts/e2e.ps1)
 
 ## Kurzfassung
 
-Dieses Portfolio-Projekt verarbeitet Stripe-Zahlungsereignisse mit fünf n8n-Workflows und PostgreSQL zu Rechnungen sowie E-Mail- und Telegram-Benachrichtigungen. Jedes Ereignis wird gespeichert, bevor es bestätigt wird; pro bezahltem Ereignis entsteht genau eine Rechnung mit der Nummer `INV-JJJJ-NNNNNN`, und Wiederholungen erzeugen keine zweite. Fällt die Datenbank aus, antwortet der Webhook mit 500, sodass Stripe es erneut versucht. Endgültig fehlgeschlagene oder hängende Ereignisse lösen einen Alarm aus und lassen sich mit Begründung und Protokolleintrag erneut verarbeiten. Ein externer Heartbeat meldet Stille nach etwa 15 Minuten. Alles läuft nur in der Stripe-Sandbox. Ein Skript führt 42 End-to-End-Prüfungen aus, und jede Zeile der Fehlertabelle ist als geprüft, gezielt ausgelöst oder unbelegt gekennzeichnet. Nicht belegt sind echte Telegram-429/5xx-Fehler, der gleichzeitige Ausfall beider Alarmkanäle und zwei vollständig parallel laufende Processor-Läufe. Bekannte Grenzen: mögliche doppelte Benachrichtigung nach einem Absturz (at-least-once), ein einseitiges Zeitfenster gegen Replay-Angriffe und Rechnungen, die keine Konformität mit deutschem Rechnungsrecht (§ 14 UStG, GoBD) beanspruchen. Das Repository lässt sich noch nicht frisch klonen und starten; das ist der nächste Schritt.
+Dieses Portfolio-Projekt verarbeitet Stripe-Zahlungsereignisse mit fünf n8n-Workflows und PostgreSQL zu Rechnungen sowie E-Mail- und Telegram-Benachrichtigungen. Jedes Ereignis wird gespeichert, bevor es bestätigt wird; pro bezahltem Ereignis entsteht genau eine Rechnung mit der Nummer `INV-JJJJ-NNNNNN`, und Wiederholungen erzeugen keine zweite. Fällt die Datenbank aus, antwortet der Webhook mit 500, sodass Stripe die Zustellung wiederholt. Endgültig fehlgeschlagene oder hängende Ereignisse lösen einen Alarm aus und lassen sich mit Begründung und Protokolleintrag erneut verarbeiten. Ein externer Heartbeat meldet einen Ausfall, wenn das System etwa 15 Minuten lang kein Signal sendet. Alles läuft nur in der Stripe-Sandbox. Ein Skript führt 42 End-to-End-Prüfungen aus, und jede Zeile der Fehlertabelle ist als geprüft, gezielt ausgelöst oder unbelegt gekennzeichnet. Nicht belegt sind echte Telegram-429/5xx-Fehler, der gleichzeitige Ausfall beider Alarmkanäle und zwei vollständig parallel laufende Processor-Läufe. Bekannte Grenzen: mögliche doppelte Benachrichtigung nach einem Absturz (at-least-once), ein einseitiges Zeitfenster gegen Replay-Angriffe und Rechnungen, die keine Konformität mit deutschem Rechnungsrecht (§ 14 UStG, GoBD) beanspruchen. Das Repository lässt sich noch nicht frisch klonen und starten; das ist der nächste Schritt.
+
+## Author
+
+Mahmud Al Hussen. LinkedIn: _(add profile URL)_
