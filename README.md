@@ -12,17 +12,6 @@ What I can show, each with the output behind it in [`docs/evidence.md`](docs/evi
 
 What I could not prove is listed just as plainly: [known limits](#known-limits) and [not proven](docs/evidence.md#not-proven).
 
-## Screenshots
-
-![Healthchecks.io check going down after about 15 minutes without a ping, then up again](docs/img/healthchecks-down-up.png)
-*The outside heartbeat: down after about 15 minutes of silence, up again when the stack returned.*
-
-![Invoice email in the Mailpit inbox](docs/img/mailpit-invoice.png)
-*The invoice email for a paid event, in the local Mailpit inbox.*
-
-![Alert message in Telegram](docs/img/telegram-alert.png)
-*A pipeline alert as it arrives in Telegram.*
-
 This runs in Stripe's sandbox only, on my own machine; what a real deployment would still need is in the [live-mode checklist](docs/live-mode-checklist.md).
 
 ```mermaid
