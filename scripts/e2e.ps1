@@ -67,6 +67,13 @@ function Assert-Counts([string]$EventId, [string]$InvoiceNumber, [string]$Label)
     Write-Step "$Label`: exactly 1 Mailpit message for $InvoiceNumber" ($m -eq 1) "found $m"
 }
 
+# What one processed demo payment must have delivered: invoice row, exactly 1 German email with text + HTML and exactly 1 real PDF, and (when
+# TELEGRAM_SEND_PDF=true) the Telegram document as a side effect of its own. The checks live in their own script so each can be made to fail.
+function Test-Delivery([string]$EventId, [string]$InvoiceNumber, [string]$Label) {
+    & "$PSScriptRoot\check-invoice-delivery.ps1" -EventId $EventId -InvoiceNumber $InvoiceNumber -ExpectTelegramDocument $script:sendPdf
+    Write-Step "$Label`: invoice row, email (subject, text + HTML, exactly 1 PDF) and Telegram document are right" ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
+}
+
 # ---------- 1. Preflight ----------
 Write-Host '== 1. Preflight ==' -ForegroundColor Cyan
 
@@ -81,7 +88,7 @@ try {
     Write-Step 'docker compose reachable' $false $_.Exception.Message
 }
 
-foreach ($svc in 'postgres', 'mailpit', 'n8n') {
+foreach ($svc in 'postgres', 'mailpit', 'n8n', 'gotenberg') {
     Write-Step "container '$svc' running" ($running -contains $svc)
 }
 
@@ -100,9 +107,17 @@ try {
     Write-Step 'migration 005 applied (alerted_at, pending_since, event_replays)' $false $_.Exception.Message
 }
 
+# Migration 006 (invoice design) adds what the invoice documents are rendered from: customer_name, payment_method, line_items.
+try {
+    $m6 = Invoke-Sql "select (select count(*) from information_schema.columns where table_name = 'invoices' and column_name in ('customer_name', 'payment_method', 'line_items')) || '|' || (select count(*) from pg_constraint where conname = 'invoices_document_all_or_none')"
+    Write-Step 'migration 006 applied (invoice document columns and their CHECK)' ($m6 -eq '3|1') $m6
+} catch {
+    Write-Step 'migration 006 applied (invoice document columns and their CHECK)' $false $_.Exception.Message
+}
+
 # M5: errorWorkflow lives only in n8n (not in the .sdk.ts files), so check it on the live workflows.
 & "$PSScriptRoot\check-error-workflows.ps1"
-Write-Step 'errorWorkflow correct on all 5 workflows' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
+Write-Step 'errorWorkflow correct on all 7 workflows' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
 
 # M5: the newest Postgres dump must exist, be non-empty and be younger than 25 h (the backup container dumps at start and every 24 h).
 try {
@@ -119,11 +134,15 @@ try {
 Write-Step 'Postgres backup authenticates over TCP and its last log line is not backup FAILED' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
 
 # M5: the n8n container must have the alert addresses and the heartbeat URL (presence only, values are never printed).
-$envScript = 'for k in HEARTBEAT_URL ALERT_EMAIL_TO ALERT_EMAIL_FROM; do v=$(docker exec n8n printenv $k); if [ -n "$v" ]; then echo "$k=set"; else echo "$k=EMPTY"; fi; done'
+$envScript = 'for k in HEARTBEAT_URL ALERT_EMAIL_TO ALERT_EMAIL_FROM INVOICE_EMAIL_FROM; do v=$(docker exec n8n printenv $k); if [ -n "$v" ]; then echo "$k=set"; else echo "$k=EMPTY"; fi; done; v=$(docker exec n8n printenv TELEGRAM_SEND_PDF); case "$v" in true|false) echo "TELEGRAM_SEND_PDF=$v";; *) echo "TELEGRAM_SEND_PDF=INVALID";; esac'
 $envOut = @(& "$PSScriptRoot\wsl-sh.ps1" -Script $envScript) | ForEach-Object { "$_".Trim() } | Where-Object { $_ }
-foreach ($k in 'HEARTBEAT_URL', 'ALERT_EMAIL_TO', 'ALERT_EMAIL_FROM') {
+foreach ($k in 'HEARTBEAT_URL', 'ALERT_EMAIL_TO', 'ALERT_EMAIL_FROM', 'INVOICE_EMAIL_FROM') {
     Write-Step "n8n container has $k" ($envOut -contains "$k=set")
 }
+# TELEGRAM_SEND_PDF has no default on purpose (it decides whether customer data goes to Telegram): unset or any other value fails every event.
+$sendPdfLine = @($envOut | Where-Object { $_ -like 'TELEGRAM_SEND_PDF=*' })[0]
+$sendPdf = ($sendPdfLine -eq 'TELEGRAM_SEND_PDF=true')
+Write-Step 'n8n container has TELEGRAM_SEND_PDF set to exactly true or false' ($sendPdfLine -eq 'TELEGRAM_SEND_PDF=true' -or $sendPdfLine -eq 'TELEGRAM_SEND_PDF=false') $(if ($sendPdfLine) { $sendPdfLine } else { 'not reported' })
 
 # Two listeners would forward every event twice and skew the duplicate checks.
 $existing = Get-Process -Name stripe -ErrorAction SilentlyContinue
@@ -154,9 +173,10 @@ try {
     # ---- 3. trigger ----
     Write-Host "`n== 3. Trigger checkout.session.completed ==" -ForegroundColor Cyan
     $t0 = Invoke-Sql 'select now()'
-    $null = & stripe trigger checkout.session.completed --add 'checkout_session:metadata[e2e]=true'
-    Write-Step 'stripe trigger succeeded' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
-    if ($LASTEXITCODE -ne 0) { throw 'stripe trigger failed' }
+    # The documented demo payment (30,00 EUR "Workshop: Automatisierung mit n8n"), tagged e2e=true; it retries Stripe's Adaptive Pricing amount mismatch.
+    & "$PSScriptRoot\demo-payment.ps1" -Tag e2e
+    Write-Step 'demo payment fired (stripe trigger with the EUR overrides)' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
+    if ($LASTEXITCODE -ne 0) { throw 'demo payment failed' }
 
     # ---- 4. find the event, wait for done ----
     Write-Host "`n== 4. Wait for the Processor ==" -ForegroundColor Cyan
@@ -190,6 +210,7 @@ limit 1
     Write-Host "`n== 5. First-delivery assertions ==" -ForegroundColor Cyan
     $invoiceNumber = Invoke-Sql "select invoice_number from invoices where event_id = '$eventId'"
     Assert-Counts $eventId $invoiceNumber 'first delivery'
+    Test-Delivery $eventId $invoiceNumber 'first delivery'
 
     # ---- 6. resend (intake dedupe) ----
     Write-Host "`n== 6. Resend the same event ==" -ForegroundColor Cyan
@@ -206,6 +227,7 @@ limit 1
     $rows = [int](Invoke-Sql "select count(*) from stripe_events where event_id = '$eventId'")
     Write-Step 'resend: still exactly 1 stripe_events row' ($rows -eq 1) "found $rows"
     Assert-Counts $eventId $invoiceNumber 'after resend'
+    Test-Delivery $eventId $invoiceNumber 'after resend'
 
     # ---- 6b. Processor idempotency ----
     Write-Host "`n== 6b. Re-run the Processor on the same event ==" -ForegroundColor Cyan
@@ -221,6 +243,7 @@ limit 1
     # Without this, unchanged counts would prove nothing: the Processor must really have re-run.
     Write-Step 'attempts increased (proves a real re-run)' ([int]$attemptsAfter -gt $attemptsBefore) "$attemptsBefore -> $attemptsAfter"
     Assert-Counts $eventId $invoiceNumber 'after Processor re-run'
+    Test-Delivery $eventId $invoiceNumber 'after Processor re-run'
 
     # ---- 6c. replay safety ----
     Write-Host "`n== 6c. replay.ps1 refuses what it must refuse ==" -ForegroundColor Cyan
