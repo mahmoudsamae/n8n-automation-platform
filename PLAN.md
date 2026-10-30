@@ -9,7 +9,8 @@ Pipeline: Stripe -> Intake -> `stripe_events` -> Processor -> Mailpit + Telegram
 | M3 | Stripe Processor workflow (below) | DONE. `scripts/e2e.ps1` guards it. Known gap: real Telegram 429/5xx never provoked, backoff is unproven (needed for M6 failure table) |
 | M4 | Failure visibility (below): error workflow, alert when an event ends `failed`, safe way to replay a failed event | DONE, merged (PR #1). Proofs run (see the M4 section); `scripts/e2e.ps1` 35/35. Known gaps (carry into the M6 failure table): see "Known gaps" in the M4 section |
 | M5 | Hardening: secret rotation procedure, Postgres backup, live-mode checklist, runbook, external dead man's switch (Monitor pings an outside heartbeat service; silence triggers the alert, covering n8n/WSL down), e2e check that each workflow's `errorWorkflow` setting is correct (it lives only in n8n, not in the `.sdk.ts` files, so a workflow recreated from its file would silently lose alerting): Intake, Processor and Monitor must point at the Error Handler id, and the Error Handler and Send Alert must have none; replace the placeholder alert addresses (`ops@example.test` recipient, `stripe-alerts@example.test` sender in `Stripe Send Alert`) with real ones | DONE, merged (PR #2, review follow-up PR #3). All proofs recorded, `scripts/e2e.ps1` 41/41 (see "Results" in the M5 section). Known gaps listed there carry into M6 |
-| M6 | Portfolio packaging: README with architecture diagram, failure scenarios with proof, 2-minute demo script | NEXT. First step is in the M6 section: review the README draft on `m6-readme-draft` |
+| M6a | Portfolio packaging, part 1: README reviewed and updated for M5, `docs/evidence.md`, stale-timestamp check, new proofs, case study (EN/DE) | IN REVIEW: PR open on `m6a-portfolio-readme`, not merged. `scripts/e2e.ps1` 42/42 (see "Results" in the M6 section) |
+| M6b | Portfolio packaging, part 2: Mailpit volume, daily n8n export, clean-clone files and check, demo reset, `DEMO.md` | NEXT, after M6a is merged |
 
 ## M3: Stripe Processor
 
@@ -199,37 +200,63 @@ All times are Europe/Berlin (CET, UTC+1) with UTC in parentheses. Healthchecks.i
 - Both alert channels failing at once (M4) and real Telegram 429/5xx backoff (M3) stay unproven.
 
 ### Out of scope
-Off-site backups, automating Healthchecks.io through its API, the Mailpit volume (M6.7), real Stripe live mode.
+Off-site backups, automating Healthchecks.io through its API, the Mailpit volume (M6b), real Stripe live mode.
 
 ## M6: Portfolio packaging
 
-Starts after M3 (M4 and M5 can finish first). Only claims backed by evidence from real runs go in.
+Split in two: M6b needs compose changes and a stopped live stack, so M6a ships first and a truthful README exists even if M6b slips. Only claims backed by evidence from real runs go in.
+Goal: this repo is the main portfolio piece for German applications (automation, backend, AI-automation). A recruiter gives it 2 minutes, a technical interviewer 20.
 
-**Next concrete step:** a README draft by another agent sits unreviewed on branch `m6-readme-draft` (worktree `C:/dev/n8n-workflows-readme`, `README.md` only, 131 lines, 2 commits).
-Review it against criteria 1-2 below and the M3-M5 results in this file (every claim needs evidence), then rebase it onto `main`. After that: failure-scenarios table, `DEMO.md`,
-demo-reset script, Mailpit volume, daily n8n export (items 2-8). Worktree agents edit files only; the live stack has one agent at a time (CLAUDE.md Rules).
+Decisions (2026-10-30):
+- Telegram 429/5xx stays labelled **unproven**; no stub test.
+- The repo goes public after M6a. Before the switch: a scan of the full history (all commits, all branches, PR refs) for secrets, the Telegram chat ID and `hc-ping.com` URLs, result shown to the owner, who flips the visibility.
+- `hello-webhook-strict.ts` (an early stray file, referenced nowhere) is deleted.
+- The README's "How it was built" lists five corrections the owner confirmed, the fifth being the `POSTGRES_PASSWORD` blind spot behind `check-backup-health.ps1` (PR #3).
 
-### Acceptance criteria
-1. **README.md:** one-paragraph pitch, architecture diagram (Stripe -> Intake -> `stripe_events` -> Processor -> Mailpit + Telegram,
-   with the 200/400/500 branches), setup steps that work from a clean clone, and the tech list.
-2. **Failure scenarios table:** one row per scenario with expected behavior and a link or pasted command output as proof. Minimum:
-   fake signature (400), stale timestamp (400), duplicate event (200 duplicate, 1 row), database down (500, then resend stores 1 row),
-   Mailpit down (event `failed`, later `done` with 1 email), Telegram 429/5xx (backoff then success), two Processor runs at once (no double send),
-   `ignored` events untouched, Postgres down (one throttled crash alert), dead event (one alert, replay ends `done` with 1 email),
-   stuck rows (alerts for stale pending, stuck failed, stuck processing). Also list the M4 known gaps and the M5 known gaps (see "Known gaps after M5").
-3. **DEMO.md:** a 2-minute video script with timestamps, the exact commands to type, and what should be on screen at each step.
-4. **No secrets:** screenshots, logs and commands are redacted (no `whsec_`, bot tokens, passwords).
-5. **Fresh-clone check:** the README setup is followed once on a clean folder and the result is noted in the README.
-6. **Demo-reset script:** one script (for example `scripts/demo-reset.sql` plus a PowerShell wrapper) that deletes all test data in FK order:
-   `side_effects` first, then `invoices`, then `stripe_events` (all three FKs are `ON DELETE RESTRICT`, so the order is required).
-   It must not touch the schema, and the user runs it themselves. Decide at build time whether it wipes everything or only `evt_test_%` rows
-   plus stripe-CLI test events, and print row counts before and after.
-   It must also delete events tagged with Stripe metadata `e2e=true` (`payload->'data'->'object'->'metadata'->>'e2e' = 'true'`):
-   `scripts/e2e.ps1` creates them with real `evt_...` ids, so the `evt_test_%` filter does not match them.
-7. **Mailpit volume:** add a named volume for Mailpit in `~/n8n/docker-compose.yml` (with `MP_DATABASE` pointing into it) so the inbox
-   survives `docker restart`/`compose down`. Today a restart wipes it, which hid emails during the M3 Mailpit-down proof.
-   Keep the compose copy in `C:\dev\claude-config\n8n\` in sync by running `C:\dev\claude-config\sync.ps1` (it refuses literal secrets).
-8. **Daily n8n export:** the Postgres backup (M5) does not cover n8n, which keeps workflows in SQLite in the `n8n_data` volume. Add a daily export of all workflows,
-   including their settings (`errorWorkflow` etc.), into `~/n8n/backups/` next to the Postgres dumps, with the same temp-file-then-rename and 14-day pruning of its own filename pattern.
-   Credentials are NOT exported (no `--decrypted`, no secrets on disk); the runbook lists the three credentials to re-create by hand. Prove it by restoring the export into a throwaway n8n
-   container and showing the 5 workflows and their `errorWorkflow` values; `scripts/check-error-workflows.ps1` can run against the export.
+### M6a: README, evidence, case study (status: built on `m6a-portfolio-readme`, PR open, not merged)
+
+Acceptance criteria:
+1. **Review first.** The draft's claims are kept, fixed or cut with evidence (table under Results).
+2. **Top of the README for the recruiter:** a pitch with no milestone jargon that says "sandbox", 3-4 proven results, a small diagram with the 200/400/500 branches.
+3. **Rest of the README for the interviewer:** failure table, engineering decisions, known limits, where to start reading, the detailed diagram, a German Kurzfassung.
+4. **Updated for M5:** heartbeat, backups and restore drill, rotation, runbook, guard scripts, all known gaps; the check count matches the latest e2e run.
+5. **Failure table:** every row of the old criterion 2 plus heartbeat, restore and rotation, each labelled `e2e`, `provoked` or `unproven`.
+6. **`docs/evidence.md`** holds the recorded outputs with stable anchors (M4 from PR #1, M5 from this file, new runs). No secrets, no customer addresses.
+7. **New proofs on the live stack, one agent at a time:** stale timestamp (new e2e check with a fresh-timestamp control), database down (500, then resend stores 1 row), two claims at once, `ignored` events untouched.
+8. **Links are stable and checked:** no line-number links; every relative link and anchor resolved by a script.
+9. **Honest wording:** no "production-ready", no "exactly once", no "every failure path"; one line says the invoices make no claim to § 14 UStG or GoBD.
+10. **Case study** in `docs/case-study.md`, English and German, claiming only what this file proves.
+11. **Done means:** `scripts/e2e.ps1` summary shown, secret scan clean, PLAN.md and CLAUDE.md updated, PR open for the owner to merge.
+
+Branch and worktree: the draft branch `m6-readme-draft` (worktree `C:\dev\n8n-workflows-readme`) was rebased onto `main` (it only adds `README.md`) and renamed `m6a-portfolio-readme`. After the owner merges:
+check the worktree is clean, `git worktree remove "C:\dev\n8n-workflows-readme"` (never `--force`), `git worktree prune`, `git branch -d m6a-portfolio-readme` (a squash merge makes `-d` refuse: ask before `-D`), delete the remote branch, show `git worktree list`.
+
+#### Results (2026-10-30)
+- **Review of the draft** (131 lines, 2 unpushed commits on `38dea66`, 9 commits behind `main`):
+  - Overclaims removed: "every failure path is tested", "runs on every change" (there is no CI; e2e is run by hand), "one throttled crash alert" (M5 proof 1c showed one per (workflow, node)).
+  - Stale for M5 and rewritten: the 35/35 count (now 42/42), the "M5 still open" limits, the setup status, the stack table.
+  - Citations: line-number links had drifted and were dropped; links to the "Proof required" lists pointed at requirements, not results, so they now point at `docs/evidence.md`.
+  - Kept: the known-limits section, the engineering decisions, and marking Telegram and both-channels-down as unproven. The "How it was built" corrections were not provable from this file; the owner confirmed them.
+- **Stale timestamp:** new `scripts/check-stale-timestamp.ps1`, run by e2e (a validly signed request 400 s old gets 400 and is not stored; a fresh-timestamp control is accepted and stored once). Made to fail both ways: `-AgeSeconds 0` and `-CorruptSignature`.
+- **Test bug found on the way:** `Get-Date -UFormat %s` in Windows PowerShell 5.1 is the LOCAL epoch (3600 s ahead in Berlin). The first version of the check put its "stale" timestamp an hour into the future and got 200. Fixed with `[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()`, also in e2e's fake-signature step.
+- **Finding: one-sided replay window.** Intake accepts a validly signed request dated one hour in the future (it only tests `age > 300`). Impact is low, it needs the signing secret. Not changed in M6a: listed under known limits and open for a decision.
+- **Database down:** 7 forwarded events all got 500 while Postgres was stopped; the resend stored exactly 1 row and it ended `done` with 1 invoice, 1 email, 1 Telegram message (output in `docs/evidence.md`).
+- **Two claims at once:** the first attempt (two API-started runs, executions 618 and 619) did not contend, so it proves nothing. The recorded proof runs the Processor's exact claim statement in two sessions, A holding its transaction open: B got 0 rows in 0.5 s; the control without `SKIP LOCKED` waited 7.4 s and took all 3. Two whole workflow runs racing was not reproduced.
+- **`ignored` events:** 102 rows, none ever claimed, processed, invoiced or given a side effect.
+- **`scripts/e2e.ps1` 42/42** (the 41 from M5 plus the stale-timestamp check).
+- Test rows `evt_test_m6a_par1..6` were created and removed with `clean-test-event.ps1`. The events from the database-down proof and the e2e run keep real `evt_...` ids and stay until the M6b reset script.
+
+### M6b: remaining packaging (status: NEXT after M6a is merged)
+
+Acceptance criteria:
+1. **Mailpit volume:** `mailpit_data` with `MP_DATABASE`, applied with `up -d --no-deps mailpit` (recreating n8n drops the n8n MCP). Proof: a message survives `docker restart mailpit` and a `compose down` + `up` (never `-v`). Compose copy synced with `C:\dev\claude-config\sync.ps1`.
+2. **Daily n8n export:** a sidecar on the same n8n image and the `n8n_data` volume runs `export:workflow --all` at start and every 24 h into `~/n8n/backups/n8n-workflows-<UTC>.json`: temp file then rename, mode 600, 5-minute retry, 14-day pruning of its own pattern only, no credentials and no `--decrypted`. A sidecar, not cron, because the stack is not always on (M5 finding), and not n8n backing itself up, because that fails exactly when n8n does.
+   e2e fails if the newest export is empty or older than 25 h (failure path provoked once). `check-error-workflows.ps1` gains `-ExportFile`. Proof: import into a throwaway n8n with no network and show 5 workflows with the right `errorWorkflow`; a tampered copy gives FAIL. The runbook lists the three credentials to re-create by hand.
+3. **Clean-clone files:** `deploy/docker-compose.yml`, `.env.example` (names only), `workflows/*.json` from the export (no `staticData`, no `pinData`, grepped for secrets; `.sdk.ts` stays the source of truth), n8n image pinned to the version running now. e2e fails if the repo compose differs from `~/n8n` or the JSON from live. JSON, because `n8n import:workflow` keeps ids, so `errorWorkflow` and Send Alert references survive without the n8n MCP.
+4. **Demo reset:** `scripts/demo-reset.ps1`, run by the owner. One transaction, FK order **`event_replays`, `side_effects`, `invoices`, `stripe_events`** (all RESTRICT; the old text omitted `event_replays`), schema untouched.
+   It wipes all rows: `stripe trigger` fires about 6 untagged `ignored` events that neither the `evt_test_%` nor the `e2e=true` filter catches, and the data is sandbox only. Guards: refuses if any payload has `livemode=true` or any row is `processing`; `-DryRun`; typed confirmation; a fresh dump first. Prints counts before and after, clears Mailpit through its API, keeps `invoice_number_seq` (e2e counts Mailpit messages by invoice number, and a reused number would break that).
+   Runs only after M6a's evidence is recorded, because it deletes the rows behind it.
+5. **Fresh-clone check:** a new folder, following only the README. The live stack is stopped with `compose down` (no `-v`) and the heartbeat paused, because `container_name` and fixed ports block running both. The owner runs the migrations. Passes when `e2e.ps1` and the guard scripts pass; date and result go in the README. A step that needs outside knowledge is a README bug. Live is then brought back and verified with e2e. Whether imported workflows re-link to hand-made credentials is untested and this check will show it.
+6. **`DEMO.md`:** a 2-minute script with timestamps, exact commands, what is on screen, and a marked cut for the Processor's wait of up to 60 s; rehearsed once with a stopwatch. `stripe listen` prints `whsec_` on STDERR, so redirect it to a file; never on screen: the heartbeat URL, the Telegram chat ID, `ALERT_EMAIL_TO` in Mailpit. The owner records the video.
+7. **Public repo (flipped by the owner after M6a, before M6b):** a rendered-README check while logged out, including the Mermaid diagrams, as soon as it is public; when M6b lands, the README's "Setup" limit is replaced by the verified setup steps and the history scan is repeated.
+8. **Done means:** e2e summary shown, runbook section 8 and known limits updated, PLAN.md and CLAUDE.md updated, M6 marked done.
