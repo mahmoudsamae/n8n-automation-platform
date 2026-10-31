@@ -1,14 +1,19 @@
 # Proves the M7 server's public IP exposes nothing, from OUTSIDE (a check on the server itself would not count).
-# Run with Tailscale off:  powershell -File scripts\check-public-ports.ps1 -Mode Public -Ip <public ip> -Scope Full|Top1000
-# Run with Tailscale on:   powershell -File scripts\check-public-ports.ps1 -Mode Tailnet -Ip <public ip>
-# -Scope is mandatory on purpose. Full needs the Oracle testing notification; without it, Top1000 only (Oracle: scans must be non-aggressive, hence the low rate).
-# Prove it can fail: run -Mode Public before the Security List rule for port 22 is deleted; it reports 22 open and public SSH reachable. That also proves
-# this laptop's network path can see an open port, so "filtered" afterwards means something.
+# Run with Tailscale off:  powershell -File scripts\check-public-ports.ps1 -Mode Public -Ip <public ip> -Scope Full|Top1000|ControlPort [-Port <n>] -WindowStart <date> -WindowEnd <date> -SourceIp <ip>
+# Run with Tailscale on:   powershell -File scripts\check-public-ports.ps1 -Mode Tailnet -Ip <public ip>     (one SSH attempt each way, no nmap)
+# Oracle requires a filed testing notification: testing starts 5 business days after submission, at most once per service per calendar year, at most 10 consecutive days,
+# non-aggressive (hence the low rate). So -Mode Public refuses to run nmap outside the filed window or from a source IP the form does not list.
+# Prove it can fail: inside the window, -Scope ControlPort against a temporary listener reports it open (runbook, Server section). That also proves
+# this laptop's network path can see an open port, so "filtered" afterwards means something. Before the Security List rule is deleted, -Mode Tailnet reports public SSH reachable.
 # Exit 0 = ok, 1 = problem.
 param(
     [Parameter(Mandatory = $true)][ValidateSet('Public', 'Tailnet')][string]$Mode,
     [Parameter(Mandatory = $true)][ValidatePattern('^\d{1,3}(\.\d{1,3}){3}$')][string]$Ip,
-    [ValidateSet('Full', 'Top1000')][string]$Scope,
+    [ValidateSet('Full', 'Top1000', 'ControlPort')][string]$Scope,
+    [ValidateRange(1, 65535)][int]$Port,
+    [datetime]$WindowStart,
+    [datetime]$WindowEnd,
+    [ValidatePattern('^\d{1,3}(\.\d{1,3}){3}$')][string]$SourceIp,
     [string]$KeyFile = (Join-Path $HOME '.ssh\oci_m7')
 )
 $ErrorActionPreference = 'Stop'
@@ -37,7 +42,18 @@ if ($Mode -eq 'Tailnet') {
     exit 0
 }
 
-if (-not $Scope) { throw '-Mode Public needs -Scope Full or -Scope Top1000' }
+if (-not $Scope) { throw '-Mode Public needs -Scope Full, Top1000 or ControlPort' }
+if ($Scope -eq 'ControlPort' -and -not $Port) { throw '-Scope ControlPort needs -Port' }
+
+# Oracle's testing window: nothing below runs without it.
+if (-not $WindowStart -or -not $WindowEnd -or -not $SourceIp) { Write-Step 'Oracle testing window given' $false 'needs -WindowStart, -WindowEnd and -SourceIp from the filed form; no nmap was run'; exit 1 }
+$now = Get-Date
+$inWindow = ($now -ge $WindowStart -and $now -lt $WindowEnd.Date.AddDays(1))
+Write-Step 'inside the filed Oracle testing window' $inWindow ("{0:yyyy-MM-dd} to {1:yyyy-MM-dd}" -f $WindowStart, $WindowEnd)
+if (-not $inWindow) { Write-Host 'no nmap was run'; exit 1 }
+$actualSource = "$(Invoke-RestMethod -Uri 'https://api.ipify.org' -TimeoutSec 15)".Trim()
+Write-Step 'source IP is the one on the form' ($actualSource -eq $SourceIp) $(if ($actualSource -eq $SourceIp) { $SourceIp } else { 'it changed: tell Oracle the new one first; no nmap was run' })
+if ($failed -gt 0) { exit 1 }
 
 # Off the tailnet, so this is the view of a stranger.
 $tsCmd = Get-Command tailscale -ErrorAction SilentlyContinue
@@ -50,8 +66,8 @@ if (Test-Path -LiteralPath $tsExe) {
     Write-Step 'laptop is off the tailnet' $true 'tailscale is not installed here'
 }
 
-$portArg = if ($Scope -eq 'Full') { '-p-' } else { '--top-ports 1000' }
-$expected = if ($Scope -eq 'Full') { 65535 } else { 1000 }
+$portArg = switch ($Scope) { 'Full' { '-p-' } 'Top1000' { '--top-ports 1000' } 'ControlPort' { "-p $Port" } }
+$expected = switch ($Scope) { 'Full' { 65535 } 'Top1000' { 1000 } 'ControlPort' { 1 } }
 $out = @(& "$PSScriptRoot\wsl-sh.ps1" -Script "nmap -Pn -sT --max-rate 100 $portArg -oG - $Ip")
 if ($LASTEXITCODE -ne 0) { Write-Step 'nmap ran' $false "exit $LASTEXITCODE"; exit 1 }
 $portsLine = @($out | Where-Object { "$_" -match '^Host: .*(Ports|Ignored State):' })
@@ -70,6 +86,8 @@ foreach ($line in $portsLine) {
 # A cut-short scan must not look like a clean one.
 Write-Step "scan covered $expected TCP ports" (($listed + $ignored) -eq $expected) "$($listed + $ignored) seen"
 Write-Step 'no open TCP port on the public IP' ($open.Count -eq 0) $(if ($open.Count) { "OPEN: $($open -join ', ')" } else { "scope $Scope" })
+
+if ($Scope -eq 'ControlPort') { if ($failed -gt 0) { exit 1 }; exit 0 }
 
 $probe = Test-PublicSsh
 Write-Step 'SSH to the public IP does not answer' (-not $probe.Answered)
