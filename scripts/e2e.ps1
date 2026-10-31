@@ -119,6 +119,14 @@ try {
 & "$PSScriptRoot\check-error-workflows.ps1"
 Write-Step 'errorWorkflow correct on all 7 workflows' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
 
+# Every change to a live workflow must be exported to its .sdk.ts file: compile each file and diff it against the live export.
+& "$PSScriptRoot\check-sdk-drift.ps1"
+Write-Step 'all 7 .sdk.ts files match their live workflows' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
+
+# Doc rot: CLAUDE.md within its line limit, every relative link and image in README and docs resolves (known-missing images warn).
+& "$PSScriptRoot\check-docs.ps1"
+Write-Step 'docs: CLAUDE.md within its line limit, no broken relative links' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
+
 # M5: the newest Postgres dump must exist, be non-empty and be younger than 25 h (the backup container dumps at start and every 24 h).
 try {
     $dumps = @(wsl -d Ubuntu bash -c "docker exec postgres-backup find /backups -maxdepth 1 -name 'automation-*.dump' -size +0c -mmin -1500") |
