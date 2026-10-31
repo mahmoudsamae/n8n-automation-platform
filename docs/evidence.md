@@ -319,15 +319,35 @@ Not rehearsed: the Telegram token and `STRIPE_WEBHOOK_SECRET` steps. The old Pos
 
 ## The e2e run
 
-Run from the M6a branch on 2026-10-30 after all changes (output trimmed to the summary):
+Run from the invoice-design branch on 2026-10-31 after all changes (output trimmed to the summary):
 
 ```
 == Summary ==
-49/49 checks passed, 0 failed
+51/51 checks passed, 0 failed
 ```
+
+51 = 49 + the SDK drift check and the docs check (below). The first run of this version aborted once, after the demo payment was stored, on a single `psql` call through WSL that returned exit -1 (`[FAIL] script aborted - psql failed (exit -1)`, 22/23); the stack was healthy right after, and the identical re-run passed 51/51. I never found a cause, so I call it a transient WSL failure, not a fixed bug.
 
 49 = the 41 checks from M5, the stale-timestamp check (42), and 7 from the invoice work: the `gotenberg` container, migration 006, `INVOICE_EMAIL_FROM`, `TELEGRAM_SEND_PDF` being exactly true or false, and the delivery check (invoice row, exactly 1 email with exactly 1 real PDF, the Telegram document) after the first delivery, after the resend and after the Processor re-run.
 The run also shows the demo payment's retry at work (`try 1 of 3: checkout_amount_mismatch (Adaptive Pricing), retrying`, then `fired (try 2 of 3)`). With Gotenberg stopped the preflight fails at once (`[FAIL] container 'gotenberg' running`, exit 1, nothing fired).
+
+### SDK drift and docs checks, made to fail
+
+Both are e2e checks (`scripts/check-sdk-drift.ps1`, `scripts/check-docs.ps1`). Each was made to fail once before it was trusted. Run on 2026-10-31 against the live stack.
+
+Drift check, real tree (all 7 files match live), then an edited copy via `-SdkDir` (the Gotenberg timeout 35000 changed to 36000 in a temp copy of the render workflow; no live workflow was touched):
+
+```
+[PASS] stripe-render-invoice.sdk.ts : no differences from live (3dvdSRSD6ObBVsxy)      (and 6 more PASS lines, exit 0)
+[FAIL] stripe-render-invoice.sdk.ts : differs from live (3dvdSRSD6ObBVsxy)
+        DIFF  Render PDF (Gotenberg)
+                parameters.options.timeout: file=36000 live=35000
+exit 1
+```
+
+Docs check: a line limit of 50 gives `[FAIL] CLAUDE.md has 99 lines, limit is 50` (exit 1); a full temp copy of the docs is clean (exit 0), and appending one image link to a file that does not exist gives `[FAIL] README.md links to docs/img/does-not-exist.png, which does not exist` (exit 1); a known-missing entry for a file that exists gives `[FAIL] docs/img/telegram-invoice.png now exists: remove it from -KnownMissing` (exit 1). The real tree gives exit 0 with a WARN for each of the two screenshots the owner still has to add.
+
+One bug in the docs check was found by running it: its relative path display used the wrong offset when the temp path was an 8.3 short name, so the failure message was garbled. Fixed, and the broken-link case re-run.
 
 ## Not proven
 

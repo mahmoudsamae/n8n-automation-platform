@@ -25,7 +25,7 @@ Stop: `wsl -d Ubuntu bash -c "cd ~/n8n && docker compose stop"`. Never `docker c
 powershell -File scripts\e2e.ps1
 ```
 
-It checks containers (including `gotenberg`), migrations 005 and 006, the `errorWorkflow` settings of all 7 workflows, a fresh Postgres dump, that the backup container can log in over TCP and is not failing, the env vars
+It checks containers (including `gotenberg`), migrations 005 and 006, the `errorWorkflow` settings of all 7 workflows, that each `.sdk.ts` file matches its live workflow (`scripts\check-sdk-drift.ps1`; the first run installs the pinned SDK with `npm ci`), that CLAUDE.md is within its line limit and no README or docs link is broken (`scripts\check-docs.ps1`; it warns for the two screenshots still to be added), a fresh Postgres dump, that the backup container can log in over TCP and is not failing, the env vars
 (`TELEGRAM_SEND_PDF` must be exactly `true` or `false`), then pushes one real demo payment (`scripts\demo-payment.ps1`) through the whole pipeline: invoice row, exactly 1 email with exactly 1 real PDF, the Telegram document, a resend, a Processor re-run, and ends with a stale-timestamp check.
 It creates one `e2e=true` event and deletes no real data (its only deletes are its own two `evt_test_e2e_stale_*` rows). For a read-only look: `scripts\check-error-workflows.ps1`.
 
@@ -165,7 +165,7 @@ Needed if the `n8n_data` volume is lost. The seven workflows are in the repo: `s
    `stripe-monitor.sdk.ts` (Send Alert) and `stripe-processor.sdk.ts` (Render Invoice, Send Telegram), the ids in `scripts\check-error-workflows.ps1`, `scripts\hooks\n8n-drift-reminder.mjs`, and the table in `CLAUDE.md`.
 5. Set `settings.errorWorkflow` (= Error Handler id) on Intake, Processor and Monitor with `update_workflow`; the `.sdk.ts` files cannot carry it.
    Leave it empty on the Error Handler, Send Alert, Render Invoice and Send Telegram (the first so a failing alert can never trigger another alert, the other two because they return their problems to the Processor).
-6. Publish all seven, then `scripts\check-error-workflows.ps1` and `scripts\e2e.ps1` must pass.
+6. Publish all seven, then `scripts\check-sdk-drift.ps1`, `scripts\check-error-workflows.ps1` and `scripts\e2e.ps1` must pass.
 
 ## 9. Known limits
 
@@ -173,6 +173,7 @@ Needed if the `n8n_data` volume is lost. The seven workflows are in the repo: `s
 - Backups are on the same disk as the database, and n8n's own data is not backed up yet.
 - An undeliverable crash alert still uses up its 15 min throttle window.
 - Both alert channels failing at once, and real Telegram 429/5xx backoff, were never provoked. The same holds for a failing `sendDocument` call; the retry loop itself was proven in the engine with a stub.
+- The Telegram sends have no timeout: n8n's Telegram node has no timeout option (checked in the n8n 2.45.6 container). A hung call holds one Processor run until the 10 min stuck-row release, and the `stuck processing` alert fires after 20 min; no event is lost. The fix is to replace `Send Message` and `Send Document` in `Stripe Send Telegram` with HTTP Request nodes that set `options.timeout` (30 s), then re-prove the retry loop, one live payment and e2e. Not built.
 - If the PDF cannot be produced AND the owner text send also fails, `last_error` names the Telegram failure and the PDF problem resurfaces on the next run.
 - Stripe is test mode only. See `docs/live-mode-checklist.md`.
 
