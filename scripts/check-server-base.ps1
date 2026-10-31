@@ -50,8 +50,9 @@ foreach ($line in $out) { $i = "$line".IndexOf('='); if ($i -gt 0) { $v["$line".
 Write-Step 'cloud-init finished' ($v.cloudinit -eq 'done') $v.cloudinit
 Write-Step 'VM user-data equals the repository file' ($v.userdata -eq $sha) (Split-Path -Leaf $CloudInitFile)
 Write-Step 'shape' ($v.shape -eq $ExpectedShape) $v.shape
-Write-Step 'OCPUs' ($v.ocpus -eq "$ExpectedOcpus") $v.ocpus
-Write-Step 'memory (GB)' ($v.mem -eq "$ExpectedMemoryGb") $v.mem
+# Compared as numbers: the metadata service says 1.0 and 6.0.
+Write-Step 'OCPUs' ([double]$v.ocpus -eq $ExpectedOcpus) $v.ocpus
+Write-Step 'memory (GB)' ([double]$v.mem -eq $ExpectedMemoryGb) $v.mem
 Write-Step 'architecture aarch64' ($v.arch -eq 'aarch64') $v.arch
 Write-Step 'Docker Engine running' ([bool]$v.docker) $v.docker
 Write-Step 'Tailscale running' ($v.tailscale -eq 'Running') $v.tailscale

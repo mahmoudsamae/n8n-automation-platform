@@ -32,6 +32,7 @@ for i in $(docker ps --format '{{.Image}}' | sort -u); do
   echo "imagearch=$i|$(docker image inspect --format '{{.Architecture}}' "$i")"
 done
 ss -H -tln | awk '{print "listen=" $4}'
+ss -H -uln | awk '{print "listenudp=" $4}'
 echo '--- memory'
 docker stats --no-stream --format 'table {{.Name}}\t{{.MemUsage}}\t{{.CPUPerc}}'
 free -m
@@ -63,6 +64,10 @@ Write-Step 'every image is arm64' ($arches.Count -gt 0 -and $notArm.Count -eq 0)
 $listen = @($out | Where-Object { "$_" -like 'listen=*' } | ForEach-Object { "$_".Substring(7) })
 $unexpected = @($listen | Where-Object { $_ -notmatch '^(127\.|\[::1\]|100\.|\[fd7a:)' -and $_ -notin '0.0.0.0:22', '[::]:22', '*:22' })
 Write-Step 'nothing unexpected listens on a public address' ($unexpected.Count -eq 0) $(if ($unexpected.Count) { $unexpected -join ', ' } else { "$($listen.Count) sockets" })
+# UDP: Tailscale's own port and the DHCP client on the private address are expected.
+$listenUdp = @($out | Where-Object { "$_" -like 'listenudp=*' } | ForEach-Object { "$_".Substring(10) })
+$unexpectedUdp = @($listenUdp | Where-Object { $_ -notmatch '^(127\.|\[::1\]|100\.|\[fd7a:|10\.)' -and $_ -notmatch ':41641$' })
+Write-Step 'no unexpected UDP listener on a public address' ($unexpectedUdp.Count -eq 0) $(if ($unexpectedUdp.Count) { $unexpectedUdp -join ', ' } else { "$($listenUdp.Count) sockets" })
 
 $i = [array]::IndexOf($out, '--- memory')
 if ($i -ge 0) { $out[$i..($out.Count - 1)] | ForEach-Object { Write-Host "$_" } }

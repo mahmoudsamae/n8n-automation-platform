@@ -59,5 +59,7 @@ write_files:
       systemctl enable --now docker tailscaled
 
 runcmd:
+  # The image's rpcbind listens on all addresses and nothing here uses NFS.
+  - systemctl disable --now rpcbind.socket rpcbind.service
   # Tailscale's Oracle guide requires --accept-dns=false: Oracle keeps handling DNS. Last on purpose: a joined node means the setup above finished.
   - /usr/local/sbin/m7-firstboot.sh && tailscale up --auth-key=__TAILSCALE_AUTHKEY__ --hostname=m7-server --accept-dns=false
