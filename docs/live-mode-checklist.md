@@ -20,8 +20,15 @@ deployment would have to change, and how to check each item. Every item needs a 
 
 - [ ] **Real SMTP instead of Mailpit** (credential `Mailpit SMTP` is test-only: it catches everything and keeps no history across restarts), with SPF and DKIM set up for the sender domain.
   Verify: send a test invoice email to an address you control and read the headers for `spf=pass dkim=pass`.
-- [ ] **Real sender and recipient addresses.** `ALERT_EMAIL_FROM` / `ALERT_EMAIL_TO` are env vars already; the **Processor still has a literal placeholder sender** (`stripe-processor@example.test`, `stripe-processor.sdk.ts` line 206) that must be changed in the workflow.
-  Verify: `Select-String -Path *.sdk.ts -Pattern 'example\.test'` returns nothing.
+- [ ] **Real sender and recipient addresses.** `ALERT_EMAIL_FROM` / `ALERT_EMAIL_TO` / `INVOICE_EMAIL_FROM` are env vars; set them to addresses the client owns (the demo uses `.example` addresses). No `example.test` placeholder is left in any workflow.
+  Verify: `Select-String -Path *.sdk.ts -Pattern 'example\.test'` returns nothing, and a test invoice arrives from the client's real sender address.
+- [ ] **Decide whether invoice PDFs go to Telegram (GDPR).** `TELEGRAM_SEND_PDF=true` sends each invoice PDF, which holds the customer's name and email address, to Telegram, a third party. A real deployment needs a legal basis, a processor agreement or transfer safeguard where required,
+  a retention and deletion answer (the messages stay in the chat) and a privacy-notice entry; until then use `false` (the PDF stays on the email, and the owner text still names the customer, so decide that too).
+  Verify: the decision and its basis are written into the client's records, and the value in `~/n8n/.env` matches it (`docs/runbook.md` section 10).
+- [ ] **A real German invoice.** The demo invoice is explicitly not one: a fictional seller (Musterwerk, no tax number, no USt-IdNr, no bank details) and a fixed 19 % split of Stripe's gross total. A real one must carry what § 14 UStG requires of the issuer (full seller and buyer details, tax number or USt-IdNr,
+  service date, the actual tax rate and amount per item, a continuous number) and the right rate for each product, and the footer disclaimer must go. Verify: the client's accountant approves one sample invoice.
+- [ ] **A restricted LIVE Stripe key for the invoice lookup.** The `Stripe read-only` credential holds a test-mode restricted key (Checkout Sessions, PaymentIntents, Charges: read). Live mode needs its own restricted key with the same three read permissions, stored only in the n8n credential.
+  Verify: a live test payment produces an invoice with the right product and payment method; the key has no write permission in the Dashboard.
 - [ ] **Customer emails are real.** The Processor sends to `customer_details.email` and fails the event if it is missing; there is no fallback address on purpose.
   Verify: a live test purchase reaches the buyer's inbox, and an event without an email ends `failed` with a clear `last_error`.
 - [ ] **Client-owned Telegram bot and chat** (new token in the `Telegram alerts` credential, new `TELEGRAM_CHAT_ID`), with at least two people in the alert chat.
@@ -41,6 +48,12 @@ deployment would have to change, and how to check each item. Every item needs a 
   Verify: accountant sign-off.
 - [ ] **Archive the sent invoice PDF unchanged (GoBD).** The demo renders invoices on demand from the stored row, so a later template change would alter re-rendered invoices; the stored row is not the document that was sent. A real German deployment must keep the sent PDF itself, unchanged: write it to write-once storage at send time, with its hash, and link it to the invoice number. Not built here.
   Verify: change the template, re-render an old invoice, and confirm the archived copy still matches its recorded hash and still shows the original layout. Have the client's accountant confirm the retention rules and period.
+- [ ] **Gotenberg stays internal and pinned.** It has no published port and a 512 MB cap; keep it that way (it renders HTML, so it must never be reachable from outside), pin the image digest, and re-run the memory check on the real host.
+  Verify: `docker port gotenberg` prints nothing, `docker inspect gotenberg` shows the memory limit.
+- [ ] **Adaptive Pricing and presentment currency.** If the client's Stripe account shows prices in the buyer's currency, the session currency can differ from what the invoice should show. The pipeline fails an event whose session amount or currency differs from the event (it never guesses); decide the policy for the client.
+  Verify: a test payment from another country either invoices correctly or fails with the clear `last_error`.
+- [ ] **n8n execution data holds customer data.** Stored executions keep invoice rows, customer names and emails, and the rendered PDF for as long as n8n keeps them, which is separate from the database retention above. Set an explicit execution retention (`EXECUTIONS_DATA_MAX_AGE`, and decide whether to save successful runs) and cover it in the privacy notice.
+  Verify: the setting is in the client's `.env` and an execution older than the limit is gone.
 - [ ] **Remove test data:** `evt_test_%` rows, `e2e=true` events, the Mailpit inbox.
   Verify: `select count(*) from stripe_events where event_id like 'evt\_test\_%'` is 0. Delete order: `event_replays`, `side_effects`, `invoices`, `stripe_events`.
 

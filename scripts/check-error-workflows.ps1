@@ -1,7 +1,8 @@
 # Fails if a workflow's errorWorkflow setting is wrong. The setting lives only in n8n (the .sdk.ts files cannot carry it),
 # so a workflow recreated from its file would silently lose alerting.
 # Intake, Processor and Monitor must point at the Error Handler; the Error Handler and Send Alert must have none
-# (a failing alert must never trigger another alert).
+# (a failing alert must never trigger another alert). The two invoice sub-workflows (Render Invoice, Send Telegram) have none either:
+# they return their problems to the Processor, which reports the failure, so a second alert for the same thing would only be noise.
 # Run: powershell -File scripts\check-error-workflows.ps1 [-ErrorHandlerId <id>]   Exit 0 = all correct, 1 = problem.
 # Prints names and ids only. -ErrorHandlerId lets you prove the failure path without editing a live workflow.
 param([string]$ErrorHandlerId = 'c2NT8k3JGpuS3r6I')
@@ -14,6 +15,8 @@ $expected = @(
     @{ Id = 'yeSlEcPp87vCJT7D'; Name = 'Stripe Monitor';       Target = $ErrorHandlerId }
     @{ Id = 'c2NT8k3JGpuS3r6I'; Name = 'Stripe Error Handler'; Target = '' }
     @{ Id = 'WO2ebvkZGK5NxzVo'; Name = 'Stripe Send Alert';    Target = '' }
+    @{ Id = '3dvdSRSD6ObBVsxy'; Name = 'Stripe Render Invoice'; Target = '' }
+    @{ Id = 'Yel7C2ufq8wR5s3W'; Name = 'Stripe Send Telegram'; Target = '' }
 )
 
 $failed = 0

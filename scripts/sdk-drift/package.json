@@ -1,0 +1,1 @@
+{"name":"sdk-drift","private":true,"type":"module","description":"Compiles the .sdk.ts files and diffs them against the live n8n export (scripts/check-sdk-drift.ps1)","dependencies":{"@n8n/workflow-sdk":"0.38.3"}}

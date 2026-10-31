@@ -161,6 +161,104 @@ Provoked once, recorded in [PR #1](https://github.com/mahmoudsamae/n8n-automatio
 `evt_test_replayok` failed once a minute with `connect EHOSTUNREACH` while Mailpit was stopped and reached `failed` with attempts 5 after about 5 minutes.
 After Mailpit restarted, `replay.ps1` moved it `failed` to `pending` to `done` with `last_error` NULL: exactly 1 invoice, 1 email side effect, 1 Telegram side effect, 1 `event_replays` row and 1 Mailpit message.
 
+## Invoice, PDF and Telegram
+
+All recorded 2026-10-30 (times UTC) on the live stack with the Stripe CLI, unless it says otherwise. Customer data is Stripe's sandbox fixture ("Jenny Rosen"); no real person is involved.
+
+### Gotenberg memory gate
+
+Before any workflow change: Gotenberg (`8.39.0-chromium`, 512 MB memory and swap cap, no published port) was added to compose and 10 sequential renders of a realistic German invoice page were measured against the 2 GB WSL.
+
+```
+10/10 renders ok: http 200, %PDF-, 25,064 bytes each; the first took 5.2 s (Chromium start), the others 0.3-0.7 s
+samples=10  min_available=707 MB  swap_used 5 MB before -> 94 MB after  gotenberg_peak=491 MB (cap 512)  n8n_peak=517 MB
+memory.events: oom 0, oom_kill 0   gotenberg OOMKilled=false restarts=0   n8n: same StartedAt before and after, restarts=0
+```
+
+The 491 MB peak looks tight but is mostly file cache: the cgroup split was `anon 133 MB, file 280 MB`, and the kernel reclaims cache before it kills anything (`memory.events max 0`). Chromium stays resident, so Gotenberg idles at about 360-410 MB.
+Not measured: several PDFs rendered at the same moment (the Processor renders one event at a time).
+
+### Live payment: owner text and PDF document
+
+`scripts\demo-payment.ps1` with a listener, `TELEGRAM_SEND_PDF=true`. Event `evt_1UWMrRFugmPRKro8af5GPRqX` ended `done` in 5 s, invoice `INV-2026-000037` (3000 eur, "Workshop: Automatisierung mit n8n", "Karte (Visa)"), side effects `email, telegram, telegram_document`, exactly 1 email in Mailpit with 1 PDF attachment.
+From the execution data (execution 939; the chat details in Telegram's reply were not copied):
+
+```
+Telegram Text Input   <b>Zahlung eingegangen</b> / Betrag: 30,00 EUR / Kunde: Jenny Rosen / Zahlungsart: Karte (Visa) / Rechnung: INV-2026-000037 / Produkt: Workshop: Automatisierung mit n8n
+Send Telegram Text    ok=true message_id=54
+Restore PDF           mode=document caption="Rechnung INV-2026-000037"   binary Rechnung-INV-2026-000037.pdf, 32,364 bytes
+Send Telegram Document ok=true message_id=55 file_name=Rechnung-INV-2026-000037.pdf file_size=32364
+```
+
+The document is exactly as large as the email attachment (32,364 bytes): the PDF crossed the sub-workflow boundary intact. That the message and the document looked right in the Telegram chat itself is the owner's confirmation, not something this repository can see.
+
+### Gotenberg down: one text, no email, then done
+
+Gotenberg stopped, one payment (`evt_1UWMspFugmPRKro8Qzhkk6cE`, `INV-2026-000038`), three Processor runs, then Gotenberg started again:
+
+```
+20:59:47  failed attempts=1 last_error=Render PDF (Gotenberg): getaddrinfo ENOTFOUND gotenberg | side_effects=telegram | emails for INV-2026-000038: 0
+21:00:51  failed attempts=2 last_error=Render PDF (Gotenberg): getaddrinfo ENOTFOUND gotenberg | side_effects=telegram | emails: 0
+21:01:23  docker start gotenberg
+21:01:50  done attempts=3 last_error=NULL | side_effects=email,telegram,telegram_document | emails for INV-2026-000038: 1 | invoices 1 | 3 side_effect rows
+```
+
+- **Exactly two Telegram sends** for this payment: execution 954 (the text, during attempt 1) and 959 (the document, after the restart). Attempt 2 (execution 955) entered at `Telegram Already Sent?` and sent nothing.
+- **The text in attempt 1** (execution 952) was the normal owner text plus the line `PDF fehlt: konnte nicht erstellt werden. Es wird erneut versucht.`, with no internal error text in it. `Send Invoice Email` did not run.
+- Attempt 1 went `Render Problem -> Describe Failure -> Mark Failed`, so the row was `failed` with the real reason; nothing was skipped silently.
+
+### TELEGRAM_SEND_PDF=false: no document, still done
+
+n8n recreated with `TELEGRAM_SEND_PDF=false` from the shell only (`.env` untouched, restored afterwards). One payment (`INV-2026-000039`) ended `done` with side effects `email, telegram`, exactly one Telegram send (the text, execution 974) and 1 email that still carries the PDF.
+
+### Resend and retry: nothing duplicated, the same document
+
+- **Resend** of `evt_1UWMrRFugmPRKro8af5GPRqX`: Intake answered 200 (duplicate); after two Processor passes still `stripe_events rows=1, invoices=1, side_effects=email,telegram,telegram_document, emails=1`, and no new Telegram execution.
+- **Retry after a simulated crash** (the email and document records removed, the event re-queued): execution 979 ran `Find Invoice -> Invoice Exists? -> Render Input`, so `Fetch Session` and `Create Invoice` did not run: no second Stripe call. The email went out again (at-least-once, by design), the document again (message 59, 32,364 bytes), the text was not repeated.
+  The two PDFs have identical extracted text (793 characters, 1 page each) and the same size; the bytes differ only by the PDF's creation timestamp (`20:57:41` vs `21:07:39`), so "same document" means same content, not same bytes.
+
+### Hostile customer name: literal in email, PDF and Telegram
+
+A test row whose customer name is `<img src=http://n8n:5678/x onerror=alert(1)> Müller, "Max" & O'Brien` (a first attempt used a mis-encoded `ü` because Windows PowerShell 5.1 read my script as cp1252; the input was rebuilt from the code point and the run repeated):
+
+- **Email HTML:** the escaped form `&lt;img src=http://n8n:5678/x onerror=alert(1)&gt; Müller, &quot;Max&quot; &amp; O&#39;Brien`, no raw `<img`. **Plain text:** the literal name.
+- **PDF** (text extracted with pypdf): the literal name, one page.
+- **Telegram** (execution 987): `Kunde: &lt;img src=http://n8n:5678/x onerror=alert(1)&gt; Müller, &quot;Max&quot; &amp; O&#39;Brien`, delivered (message 62, parse mode HTML would have rejected an unescaped tag) and the document delivered (message 63).
+- Gotenberg's log shows 0 requests mentioning `n8n:5678`. Because the markup is escaped, no tag reaches Chromium at all; the page's own `Content-Security-Policy` (`default-src 'none'`) is a second layer that was not separately provoked.
+
+### Stripe lookup fails: failed with a clear reason, nothing created
+
+A test row whose payload points at a session that does not exist:
+
+```
+evt_test_badsession : failed attempts=1 last_error=The resource you are requesting could not be found: No such checkout.session: cs_test_doesnotexist0000000000 | invoices=0 side_effects=(none)
+```
+
+A 404 is not retried (only 429, 5xx and network-looking errors are). A real Stripe 429 or 5xx on this lookup was not provoked.
+The first live run of the lookup had failed for a different reason: n8n serialised two `expand[]` query parameters as an object and Stripe answered 400; the query now sits in the URL. That same run also showed that `last_error` only held "Bad request - please check your parameters", so `Describe Failure` now keeps the error's description.
+The redaction of `rk_`, `sk_`, `pk_`, `whsec_` and bot tokens in that text was proven against the code taken from n8n's own export (8 cases plus a control that leaks when the redaction lines are removed).
+
+### The retry loop, proven in the engine
+
+`Stripe Send Telegram` has one retry loop for the text and the document. A throwaway copy of it with a send step that always fails with a retryable error ("Bad gateway") was run in n8n (execution 914, archived afterwards):
+
+```
+Send (stub): 3 runs ("Bad gateway at try 1/2/3 (pdf on item: true)")   Backoff: 2,009 ms and 4,002 ms   Retryable? asked 3 times, the third said no   Failed: ok=false, problem="Telegram: Bad gateway at try 3 ..."
+```
+
+So: exactly 3 tries, 2 s then 4 s, and the PDF was on the item at every try. What this does not prove is Telegram itself returning 429 or 5xx.
+
+### The Processor's Telegram wiring, all 384 cases
+
+A simulator walks the real compiled Processor graph from `Render Input` to a terminal node, running the real node code and expressions, for every combination of already-done side effects (8), `TELEGRAM_SEND_PDF` (2), render outcome ok / PDF failure / data failure (3) and failing email, text or document send (8): 384 cases.
+Invariants checked for all of them: a `done` event has everything required recorded; nothing is sent twice or after it was already done; every failure ends `failed` with a reason; a render problem never ends `done`; on a PDF failure the email and document are not sent but the text is (with the "PDF fehlt" line) when it is still pending; the PDF is on the item wherever it is sent; `include_pdf` is true exactly when a PDF is needed.
+All hold. Five broken wirings (silent skips among them) were each caught. One accepted behaviour it exposed: if the PDF fails and the owner text send also fails, `last_error` names the Telegram failure and the PDF problem resurfaces on the next run.
+
+### Invoice delivery checks, made to fail
+
+`scripts/check-invoice-delivery.ps1` passes on the right payments and fails, with the intended line, on each wrong expectation: 2 attachments, a different subject, 3100 instead of 3000, another product, a document where none is expected, no document where one is expected, an invoice of another event.
+It also flagged a real case: `INV-2026-000037` has 2 emails because of the crash simulation above. Building the demo trigger and its first live runs also showed that it needs a retry: Adaptive Pricing is on in the sandbox account and Stripe sometimes answers `checkout_amount_mismatch`.
+
 ## Alerts and replay
 
 All of this is from [PR #1](https://github.com/mahmoudsamae/n8n-automation-platform/pull/1) (M4), recorded when it was built and not re-run in M6a. The criteria are in [PLAN.md, M4](../PLAN.md#m4-failure-visibility).
@@ -221,18 +319,41 @@ Not rehearsed: the Telegram token and `STRIPE_WEBHOOK_SECRET` steps. The old Pos
 
 ## The e2e run
 
-Run from the M6a branch on 2026-10-30 after all changes (output trimmed to the summary):
+Run from the invoice-design branch on 2026-10-31 after all changes (output trimmed to the summary):
 
 ```
 == Summary ==
-42/42 checks passed, 0 failed
+51/51 checks passed, 0 failed
 ```
 
-42 = the 41 checks from M5 plus the stale-timestamp check.
+51 = 49 + the SDK drift check and the docs check (below). The first run of this version aborted once, after the demo payment was stored, on a single `psql` call through WSL that returned exit -1 (`[FAIL] script aborted - psql failed (exit -1)`, 22/23); the stack was healthy right after, and the identical re-run passed 51/51. I never found a cause, so I call it a transient WSL failure, not a fixed bug.
+
+49 = the 41 checks from M5, the stale-timestamp check (42), and 7 from the invoice work: the `gotenberg` container, migration 006, `INVOICE_EMAIL_FROM`, `TELEGRAM_SEND_PDF` being exactly true or false, and the delivery check (invoice row, exactly 1 email with exactly 1 real PDF, the Telegram document) after the first delivery, after the resend and after the Processor re-run.
+The run also shows the demo payment's retry at work (`try 1 of 3: checkout_amount_mismatch (Adaptive Pricing), retrying`, then `fired (try 2 of 3)`). With Gotenberg stopped the preflight fails at once (`[FAIL] container 'gotenberg' running`, exit 1, nothing fired).
+
+### SDK drift and docs checks, made to fail
+
+Both are e2e checks (`scripts/check-sdk-drift.ps1`, `scripts/check-docs.ps1`). Each was made to fail once before it was trusted. Run on 2026-10-31 against the live stack.
+
+Drift check, real tree (all 7 files match live), then an edited copy via `-SdkDir` (the Gotenberg timeout 35000 changed to 36000 in a temp copy of the render workflow; no live workflow was touched):
+
+```
+[PASS] stripe-render-invoice.sdk.ts : no differences from live (3dvdSRSD6ObBVsxy)      (and 6 more PASS lines, exit 0)
+[FAIL] stripe-render-invoice.sdk.ts : differs from live (3dvdSRSD6ObBVsxy)
+        DIFF  Render PDF (Gotenberg)
+                parameters.options.timeout: file=36000 live=35000
+exit 1
+```
+
+Docs check: a line limit of 50 gives `[FAIL] CLAUDE.md has 99 lines, limit is 50` (exit 1); a full temp copy of the docs is clean (exit 0), and appending one image link to a file that does not exist gives `[FAIL] README.md links to docs/img/does-not-exist.png, which does not exist` (exit 1); a known-missing entry for a file that exists gives `[FAIL] docs/img/telegram-invoice.png now exists: remove it from -KnownMissing` (exit 1). The real tree gave exit 0 with a WARN for each of the two screenshots the owner had still to add; those two README references were removed afterwards (they return with M6b), so the check now runs with no known-missing files and no warnings.
+
+One bug in the docs check was found by running it: its relative path display used the wrong offset when the temp path was an 8.3 short name, so the failure message was garbled. Fixed, and the broken-link case re-run.
 
 ## Not proven
 
-- Telegram 429/5xx backoff against a real error. The retry code is in the Processor and Send Alert, but no real 429 or 5xx was ever provoked.
+- Telegram 429/5xx backoff against a real error. The retry code is in `Stripe Send Telegram` and Send Alert, but no real 429 or 5xx was ever provoked. The retry loop's mechanics were proven with a stub; a failing `sendDocument` call and a real Stripe 429/5xx on the invoice lookup were not provoked either.
+- Several PDFs rendered at the same moment (memory gate), and Gotenberg under the memory cap with a much longer invoice.
+- How the email looks in mail clients other than Mailpit: some (Gmail among them) strip inline SVG, so the logo may be missing there; the layout survives without it.
 - Both alert channels failing at once.
 - Two whole Processor runs racing (only the claim statement was).
 - Whether the OLD Postgres password is rejected after rotation.

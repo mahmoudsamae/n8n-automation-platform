@@ -8,6 +8,8 @@ const WORKFLOW_FILES = {
   'c2NT8k3JGpuS3r6I': 'stripe-error-handler.sdk.ts',
   'yeSlEcPp87vCJT7D': 'stripe-monitor.sdk.ts',
   'WO2ebvkZGK5NxzVo': 'stripe-send-alert.sdk.ts',
+  '3dvdSRSD6ObBVsxy': 'stripe-render-invoice.sdk.ts',
+  'Yel7C2ufq8wR5s3W': 'stripe-send-telegram.sdk.ts',
 };
 
 let raw = '';
