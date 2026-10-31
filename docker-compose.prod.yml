@@ -1,0 +1,82 @@
+# Production stack for the M7 server. Standalone: the laptop's dev compose file is not in this repository.
+# Rules (scripts\check-prod-stack.ps1 enforces them): no published ports on any service, every image pinned to a version, mem_limit on every service.
+# Why no ports: Docker publishes past the host firewall. Admin UIs are reached over Tailscale with an SSH tunnel to the fixed IPs below:
+#   ssh -L 5678:172.30.0.10:5678 -L 8025:172.30.0.11:8025 ubuntu@m7-server
+# No postgres-backup service: it leaves plaintext dumps on disk. infra/backup-offsite.sh pipes pg_dump straight into age instead.
+# Start: docker compose -f docker-compose.prod.yml up -d (infra/bootstrap.sh does this).
+name: m7
+
+services:
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:2.45.6
+    container_name: n8n
+    restart: unless-stopped
+    mem_limit: 1536m
+    environment:
+      - GENERIC_TIMEZONE=Europe/Berlin
+      - TZ=Europe/Berlin
+      - NODE_FUNCTION_ALLOW_BUILTIN=crypto
+      - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
+      # Without an explicit key n8n generates one inside its volume. :? makes a missing key fail instead of starting.
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:?set N8N_ENCRYPTION_KEY in .env}
+      # Filled in M7b, when the workflows arrive. Empty until then; nothing reads them yet.
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET:-}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+      - ALERT_EMAIL_TO=${ALERT_EMAIL_TO:-}
+      - ALERT_EMAIL_FROM=${ALERT_EMAIL_FROM:-}
+      - HEARTBEAT_URL=${HEARTBEAT_URL:-}
+      - INVOICE_EMAIL_FROM=${INVOICE_EMAIL_FROM:-}
+      - TELEGRAM_SEND_PDF=${TELEGRAM_SEND_PDF:-}
+    volumes:
+      - n8n_data:/home/node/.n8n
+    depends_on:
+      - postgres
+      - mailpit
+    networks:
+      default:
+        ipv4_address: 172.30.0.10
+
+  postgres:
+    image: postgres:17.11-alpine
+    container_name: postgres
+    restart: unless-stopped
+    mem_limit: 512m
+    environment:
+      - POSTGRES_USER=automation
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      - POSTGRES_DB=automation
+    command: postgres -c shared_buffers=64MB
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+
+  mailpit:
+    image: axllent/mailpit:v1.32.0
+    container_name: mailpit
+    restart: unless-stopped
+    mem_limit: 128m
+    networks:
+      default:
+        ipv4_address: 172.30.0.11
+
+  gotenberg:
+    # Same flags as the laptop. Swap capped to the memory limit, so a runaway render is killed instead of swapping the VM.
+    image: gotenberg/gotenberg:8.39.0-chromium
+    container_name: gotenberg
+    restart: unless-stopped
+    mem_limit: 512m
+    memswap_limit: 512m
+    command:
+      - gotenberg
+      - --chromium-disable-javascript
+      - --webhook-disable
+      - --api-timeout=30s
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+
+volumes:
+  n8n_data:
+  pg_data:
