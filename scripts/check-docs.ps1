@@ -1,12 +1,12 @@
 # Fails on doc rot that no other check sees: CLAUDE.md over its length limit, or a relative link or image in the README or docs/*.md
 # that points at a file which does not exist.
-# Known-missing files (images the owner still has to add) are listed in -KnownMissing: they print as WARN and do not fail.
+# Files that are referenced but not there yet can be listed in -KnownMissing (empty today): they print as WARN and do not fail.
 # The list cleans itself: once such a file exists, the check FAILS until it is removed from the list.
 # Run: powershell -File scripts\check-docs.ps1 [-Root <repo>] [-MaxClaudeLines 100]   Exit 0 = ok, 1 = problem.
 param(
     [string]$Root = (Split-Path -Parent $PSScriptRoot),
     [int]$MaxClaudeLines = 100,
-    [string[]]$KnownMissing = @('docs/img/healthchecks-down-up.png', 'docs/img/telegram-alert.png')
+    [string[]]$KnownMissing = @()
 )
 $ErrorActionPreference = 'Stop'
 $utf8 = New-Object System.Text.UTF8Encoding($false)

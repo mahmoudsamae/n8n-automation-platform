@@ -16,9 +16,6 @@ What I could not prove is listed just as plainly: [known limits](#known-limits) 
 
 ## Screenshots
 
-![Healthchecks.io check going down after about 15 minutes without a ping, then up again](docs/img/healthchecks-down-up.png)
-*The outside heartbeat: down after about 15 minutes of silence, up again when the stack returned.*
-
 ![The invoice email in the Mailpit inbox](docs/img/mailpit-invoice.png)
 *The invoice email for a demo payment, with the PDF attached (Mailpit, the local inbox).*
 
@@ -27,9 +24,6 @@ What I could not prove is listed just as plainly: [known limits](#known-limits) 
 
 ![The owner's Telegram chat after a payment: the text, then the invoice PDF as a document](docs/img/telegram-invoice.png)
 *The owner's Telegram chat after a demo payment: the message with the customer, payment method and invoice number, then the PDF as a document (`TELEGRAM_SEND_PDF=true`). The customer is Stripe's test name.*
-
-![Owner alert in Telegram](docs/img/telegram-alert.png)
-*The owner message in Telegram.*
 
 This runs in Stripe's sandbox only, on my own machine; what a real deployment would still need is in the [live-mode checklist](docs/live-mode-checklist.md).
 
@@ -188,7 +182,7 @@ Labels: **e2e** is asserted on every run of [`scripts/e2e.ps1`](scripts/e2e.ps1)
 
 ## Kurzfassung
 
-Dieses Portfolio-Projekt verarbeitet Stripe-Zahlungsereignisse mit sieben n8n-Workflows und PostgreSQL zu deutschen Rechnungen (HTML-E-Mail mit PDF-Anhang) sowie einer Telegram-Nachricht an den Betreiber. Jedes Ereignis wird gespeichert, bevor es bestätigt wird; pro bezahltem Ereignis entsteht genau eine Rechnung mit der Nummer `INV-JJJJ-NNNNNN`, und Wiederholungen erzeugen keine zweite. Fällt die Datenbank aus, antwortet der Webhook mit 500, sodass Stripe die Zustellung wiederholt. Endgültig fehlgeschlagene oder hängende Ereignisse lösen einen Alarm aus und lassen sich mit Begründung und Protokolleintrag erneut verarbeiten. Ein externer Heartbeat meldet einen Ausfall, wenn das System etwa 15 Minuten lang kein Signal sendet. Alles läuft nur in der Stripe-Sandbox. Das PDF wird nur aus der gespeicherten Rechnungszeile erzeugt, sodass jeder Wiederholungsversuch dasselbe Dokument liefert; lässt es sich nicht erzeugen, endet das Ereignis als fehlgeschlagen und wird nie stillschweigend übersprungen. Ein Skript führt 51 End-to-End-Prüfungen aus, und jede Zeile der Fehlertabelle ist als geprüft, gezielt ausgelöst oder unbelegt gekennzeichnet. Nicht belegt sind echte Telegram-429/5xx-Fehler, der gleichzeitige Ausfall beider Alarmkanäle und zwei vollständig parallel laufende Processor-Läufe. Bekannte Grenzen: mögliche doppelte Benachrichtigung nach einem Absturz (at-least-once), die Weitergabe von Kundendaten an Telegram beim PDF-Versand (eine DSGVO-Entscheidung; die Einstellung hat keinen Standardwert), ein einseitiges Zeitfenster gegen Replay-Angriffe und Rechnungen, die keine Konformität mit deutschem Rechnungsrecht (§ 14 UStG, GoBD) beanspruchen. Das Repository lässt sich noch nicht frisch klonen und starten; das ist der nächste Schritt.
+Dieses Portfolio-Projekt verarbeitet Stripe-Zahlungsereignisse mit sieben n8n-Workflows und PostgreSQL zu deutschen Rechnungen (HTML-E-Mail mit PDF-Anhang) sowie einer Telegram-Nachricht an den Betreiber. Jedes Ereignis wird gespeichert, bevor es bestätigt wird; pro bezahltem Ereignis entsteht genau eine Rechnung mit der Nummer `INV-JJJJ-NNNNNN`, und Wiederholungen erzeugen keine zweite. Fällt die Datenbank aus, antwortet der Webhook mit 500, sodass Stripe die Zustellung wiederholt. Endgültig fehlgeschlagene oder hängende Ereignisse lösen einen Alarm aus und lassen sich mit Begründung und Protokolleintrag erneut verarbeiten. Ein externer Heartbeat meldet einen Ausfall, wenn das System etwa 15 Minuten lang kein Signal sendet. Alles läuft nur in der Stripe-Sandbox. Das PDF wird nur aus der gespeicherten Rechnungszeile erzeugt, sodass jeder Wiederholungsversuch dasselbe Dokument liefert; lässt es sich nicht erzeugen, endet das Ereignis als fehlgeschlagen und wird nie stillschweigend übersprungen. Ein Skript führt 51 End-to-End-Prüfungen aus, und jede Zeile der Fehlertabelle ist als geprüft, gezielt ausgelöst oder unbelegt gekennzeichnet. Nicht belegt sind echte Telegram-429/5xx-Fehler, ein fehlschlagender sendDocument-Aufruf, ein echtes Stripe-429/5xx bei der Rechnungsabfrage, der gleichzeitige Ausfall beider Alarmkanäle und zwei vollständig parallel laufende Processor-Läufe. Bekannte Grenzen: mögliche doppelte Benachrichtigung nach einem Absturz (at-least-once), die Weitergabe von Kundendaten an Telegram beim PDF-Versand (eine DSGVO-Entscheidung; die Einstellung hat keinen Standardwert), ein einseitiges Zeitfenster gegen Replay-Angriffe und Rechnungen, die keine Konformität mit deutschem Rechnungsrecht (§ 14 UStG, GoBD) beanspruchen. Das Repository lässt sich noch nicht frisch klonen und starten; das ist der nächste Schritt.
 
 ## Author
 

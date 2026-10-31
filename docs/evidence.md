@@ -345,7 +345,7 @@ Drift check, real tree (all 7 files match live), then an edited copy via `-SdkDi
 exit 1
 ```
 
-Docs check: a line limit of 50 gives `[FAIL] CLAUDE.md has 99 lines, limit is 50` (exit 1); a full temp copy of the docs is clean (exit 0), and appending one image link to a file that does not exist gives `[FAIL] README.md links to docs/img/does-not-exist.png, which does not exist` (exit 1); a known-missing entry for a file that exists gives `[FAIL] docs/img/telegram-invoice.png now exists: remove it from -KnownMissing` (exit 1). The real tree gives exit 0 with a WARN for each of the two screenshots the owner still has to add.
+Docs check: a line limit of 50 gives `[FAIL] CLAUDE.md has 99 lines, limit is 50` (exit 1); a full temp copy of the docs is clean (exit 0), and appending one image link to a file that does not exist gives `[FAIL] README.md links to docs/img/does-not-exist.png, which does not exist` (exit 1); a known-missing entry for a file that exists gives `[FAIL] docs/img/telegram-invoice.png now exists: remove it from -KnownMissing` (exit 1). The real tree gave exit 0 with a WARN for each of the two screenshots the owner had still to add; those two README references were removed afterwards (they return with M6b), so the check now runs with no known-missing files and no warnings.
 
 One bug in the docs check was found by running it: its relative path display used the wrong offset when the temp path was an 8.3 short name, so the failure message was garbled. Fixed, and the broken-link case re-run.
 

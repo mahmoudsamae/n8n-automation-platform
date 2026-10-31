@@ -25,7 +25,7 @@ Stop: `wsl -d Ubuntu bash -c "cd ~/n8n && docker compose stop"`. Never `docker c
 powershell -File scripts\e2e.ps1
 ```
 
-It checks containers (including `gotenberg`), migrations 005 and 006, the `errorWorkflow` settings of all 7 workflows, that each `.sdk.ts` file matches its live workflow (`scripts\check-sdk-drift.ps1`; the first run installs the pinned SDK with `npm ci`), that CLAUDE.md is within its line limit and no README or docs link is broken (`scripts\check-docs.ps1`; it warns for the two screenshots still to be added), a fresh Postgres dump, that the backup container can log in over TCP and is not failing, the env vars
+It checks containers (including `gotenberg`), migrations 005 and 006, the `errorWorkflow` settings of all 7 workflows, that each `.sdk.ts` file matches its live workflow (`scripts\check-sdk-drift.ps1`; the first run installs the pinned SDK with `npm ci`), that CLAUDE.md is within its line limit and no README or docs link is broken (`scripts\check-docs.ps1`), a fresh Postgres dump, that the backup container can log in over TCP and is not failing, the env vars
 (`TELEGRAM_SEND_PDF` must be exactly `true` or `false`), then pushes one real demo payment (`scripts\demo-payment.ps1`) through the whole pipeline: invoice row, exactly 1 email with exactly 1 real PDF, the Telegram document, a resend, a Processor re-run, and ends with a stale-timestamp check.
 It creates one `e2e=true` event and deletes no real data (its only deletes are its own two `evt_test_e2e_stale_*` rows). For a read-only look: `scripts\check-error-workflows.ps1`.
 
