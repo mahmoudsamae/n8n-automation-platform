@@ -1,6 +1,6 @@
 # M7 — Public demo server (design spec)
 
-Status: M7a built, in review (nmap from outside is pending Oracle's testing window); M7b and M7c are design, not built. Owner decisions marked **[OWNER]**. Every claim marked **[VERIFY]** must be checked against the live system or the official doc before it is relied on, and the result recorded in `docs/evidence.md`.
+Status: M7a built (nmap from outside is pending Oracle's testing window, follow-up in PLAN.md); M7b and M7c are design, not built. Owner decisions marked **[OWNER]**. Every claim marked **[VERIFY]** must be checked against the live system or the official doc before it is relied on, and the result recorded in `docs/evidence.md`.
 
 ## Goal
 

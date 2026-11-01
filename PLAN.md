@@ -12,7 +12,7 @@ Pipeline: Stripe -> Intake -> `stripe_events` -> Processor -> Mailpit + Telegram
 | M6a | Portfolio packaging, part 1: README reviewed and updated for M5, `docs/evidence.md`, stale-timestamp check, new proofs, case study (EN/DE) | IN REVIEW: PR open on `m6a-portfolio-readme`, not merged. `scripts/e2e.ps1` 42/42 (see "Results" in the M6 section) |
 | INV | Invoice design: German invoice (HTML email, plain text, PDF via Gotenberg) rendered only from the stored invoice row by the sub-workflow `Stripe Render Invoice`; one read-only Stripe lookup for product and payment method; owner Telegram text plus optional PDF document (`TELEGRAM_SEND_PDF`) through the shared sub-workflow `Stripe Send Telegram` | IN PROGRESS: branch `invoice-design` (PR not opened yet, never merge before review). `scripts/e2e.ps1` 51/51, proofs in `docs/evidence.md` (section "Invoice, PDF and Telegram"). Not proven: real Stripe and Telegram 429/5xx, `sendDocument` failing. Open before the PR: secret scan, push |
 | M6b | Portfolio packaging, part 2: Mailpit volume, daily n8n export, clean-clone files and check, demo reset, `DEMO.md` | NEXT, after M6a is merged |
-| M7a | Server foundation: free OCI VM from the repo, zero public ports, encrypted offsite backups, timed rebuild drill (`docs/tasks/m7-server.md`) | IN REVIEW: PR open on `m7a-foundation`, not merged. Rebuild drill about 38 min. **Pending:** nmap from outside, in Oracle's testing window; form to be sent by 2 Nov 2026, earliest scan 9 Nov (see the M7 section) |
+| M7a | Server foundation: free OCI VM from the repo, zero public ports, encrypted offsite backups, timed rebuild drill (`docs/tasks/m7-server.md`) | PR #7, merged by the owner with one line open. Rebuild drill about 38 min. **Pending:** nmap from outside, in Oracle's testing window, then a small evidence PR; form to be sent by 2 Nov 2026, earliest scan 9 Nov (see the M7 section) |
 | M7b, M7c | Stack and tunnel; demo experience (see the M7 section and the spec) | TODO, after M7a |
 
 ## M3: Stripe Processor
@@ -269,8 +269,8 @@ Acceptance criteria:
 
 Spec: `docs/tasks/m7-server.md`. Proofs: `docs/evidence.md` section "M7a server". Operations: `docs/runbook.md` section 11.
 
-### M7a follow-ups (not blocking the PR except the first)
-- **Before merge:** the scans in Oracle's window (runbook section 11), output added to the evidence and the PR.
+### M7a follow-ups
+- **Scans, the one open Definition of Done line:** the owner sends Oracle's form by 2 Nov 2026. In the window, run both scans in one session (control port, then full; runbook section 11), then open a small evidence PR that adds the output to `docs/evidence.md` and marks the line done.
 - 7 days after the rebuild (from 2026-11-08): read Oracle's `MemoryUtilization` for the 4 GB VM, compare with `free -m`, record it. Idle was 24-26% by `free -m`, so a metric that ignores cache stays above 20% only narrowly.
 - Day 15 after the first backup (from 2026-11-15): check the bucket's lifecycle rule really deleted the oldest object. Keep the first object until then, it is the test.
 - Move backups to R2 before real data: a closed Oracle account loses the backups too.
