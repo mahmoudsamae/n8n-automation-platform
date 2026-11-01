@@ -422,6 +422,9 @@ check-offsite-restore exit: 0
 | `check-offsite-restore.ps1` | One byte flipped | `age: error: failed to decrypt and authenticate payload chunk`, exit 1 |
 | `check-offsite-restore.ps1` | Wrong key | `age: error: no identity matched any of the recipients`, exit 1 |
 | `check-offsite-restore.ps1` | `-AddRowToRestored`, throwaway only | `[FAIL] stripe_events: restored matches server - server=1 restored=2`, exit 1 |
+| `check-offsite-restore.ps1`: key, dump, timer | Fake files planted on the server (a made-up key, an empty `.dump`), timer stopped | `[FAIL] no age private key on the server - 1 key files, 1 files with key text`, `[FAIL] no plaintext dump on the server disk - 1 found`, `[FAIL] backup timer active - inactive`, exit 1. Green again after undoing |
+| `check-server-base.ps1`: shape | `-ExpectedShape x` | `[FAIL] shape - VM.Standard.A1.Flex` |
+| `check-public-ports.ps1`: parser | Not a scan of the server: nmap against the reserved test address 192.0.2.1 | All-filtered output is `Ports: <tab>Ignored State: filtered (100)`, one port is `18999/filtered/tcp`; both forms are what the parser reads. 100 filtered ports took 21 s, so the full scan may take well over 11 minutes |
 | `server-restore.ps1` | Second restore onto the restored database | `[FAIL] the server's database is not empty`, exit 1 |
 
 ### Findings from the live VM
@@ -437,6 +440,7 @@ check-offsite-restore exit: 0
 - How Oracle's `MemoryUtilization` treats page cache, and the reading after 7 days on the 4 GB VM.
 - That the bucket's lifecycle rule really deletes after 14 days: only the rule's existence was seen, by the owner.
 - A nightly timer run on the rebuilt VM. The first VM's run at 03:01 was reported green by the owner: Healthchecks green, 2 objects in the bucket.
+- Checks never seen failing: "upload URL cannot read or list" (it would need a URL with read rights), `sshd: password login off` (the image already had it off) and the simple value lines of `check-server-base.ps1` (cloud-init, Docker, Tailscale, swap, timezone, log limits, unattended-upgrades). `sshd: root login off` was added after hardening; the first VM showed `without-password` before it.
 - Telegram 429/5xx backoff against a real error. The retry code is in `Stripe Send Telegram` and Send Alert, but no real 429 or 5xx was ever provoked. The retry loop's mechanics were proven with a stub; a failing `sendDocument` call and a real Stripe 429/5xx on the invoice lookup were not provoked either.
 - Several PDFs rendered at the same moment (memory gate), and Gotenberg under the memory cap with a much longer invoice.
 - How the email looks in mail clients other than Mailpit: some (Gmail among them) strip inline SVG, so the logo may be missing there; the layout survives without it.

@@ -275,10 +275,13 @@ Spec: `docs/tasks/m7-server.md`. Proofs: `docs/evidence.md` section "M7a server"
 - Day 15 after the first backup (from 2026-11-15): check the bucket's lifecycle rule really deleted the oldest object. Keep the first object until then, it is the test.
 - Move backups to R2 before real data: a closed Oracle account loses the backups too.
 - The pre-authenticated upload URL expires after one year.
+- After the merge: the server's clone is on `m7a-foundation`; switch it to `main`, so `bootstrap.sh`'s `git pull --ff-only` keeps working.
 
 ### M7b requirements found in M7a
 - Back up the n8n export too. `N8N_ENCRYPTION_KEY` alone saves nothing: credentials live in the `n8n_data` volume, which is not backed up.
-- Block containers from the instance metadata service, and require IMDSv2 only (the VM has "Require an authorization header" on; confirm it is kept by every rebuild). User-data, with the spent Tailscale key, stays readable through it.
+- Block containers from the instance metadata service, before any public traffic: the n8n container can read it today (checked 2026-11-01, even with IMDSv2's header). User-data, with the spent Tailscale key, is readable through it. Also confirm "Require an authorization header" on every rebuild.
+- Alert when the stack or VM is down: today only the nightly backup ping notices, after up to about 30 hours. Fine with no traffic, not with a public demo (the spec's outside uptime check).
+- Workflow code can read the n8n environment (`N8N_BLOCK_ENV_ACCESS_IN_NODE=false`, including `N8N_ENCRYPTION_KEY`). Decide this before workflows run on a public server.
 - Re-run the drill to "e2e green": that number goes in the README, not M7a's 38 minutes.
 - The drill's new VM has a new public IP that Oracle's form does not list. A scan of it needs a new form, and if 2026's test is used up, it waits for 2027. Until then the proof is the Security List.
 - Re-measure memory with workflows, `cloudflared` and real PDF renders: all `mem_limit` values add up to 2,688 MB today on a 4 GB VM.

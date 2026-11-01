@@ -1,6 +1,6 @@
 # Proves the M7 VM is what infra/cloud-init.yaml describes, and that SSH is limited to Tailscale at the OS layer.
 # Run: powershell -File scripts\check-server-base.ps1   Exit 0 = ok, 1 = problem.
-# Prove it can fail: -CloudInitFile <edited copy>, -ExpectedMemoryGb 12. Before infra/harden-ssh.sh ran, the iptables and sshd lines fail on their own.
+# Prove it can fail: -CloudInitFile <edited copy>, -ExpectedMemoryGb 12. -ExpectedShape x. Before infra/harden-ssh.sh ran, the iptables and root-login lines fail on their own.
 param(
     [string]$CloudInitFile = (Join-Path (Split-Path -Parent $PSScriptRoot) 'infra\cloud-init.yaml'),
     [int]$ExpectedOcpus = 1,
@@ -40,6 +40,7 @@ rules22="$(sudo iptables -S INPUT | grep -- '--dport 22' || true)"
 echo "ssh22total=$(printf '%s' "$rules22" | grep -c . || true)"
 echo "ssh22public=$(printf '%s' "$rules22" | grep -vc -- '-i tailscale0' || true)"
 echo "sshpassword=$(sudo sshd -T 2>/dev/null | awk '/^passwordauthentication/{print $2}')"
+echo "sshroot=$(sudo sshd -T 2>/dev/null | awk '/^permitrootlogin/{print $2}')"
 '@
 
 $out = @(& "$PSScriptRoot\server-sh.ps1" -Script $sh)
@@ -63,6 +64,7 @@ Write-Step 'journald limit' ($v.journald -eq '200M') $v.journald
 Write-Step 'unattended-upgrades on' ($v.upgrades -eq '1' -and $v.upgradesunit -eq 'enabled') $v.upgradesunit
 Write-Step 'iptables: port 22 only on tailscale0' ($v.ssh22total -ne '0' -and $v.ssh22public -eq '0') "$($v.ssh22total) rule(s), $($v.ssh22public) public"
 Write-Step 'sshd: password login off' ($v.sshpassword -eq 'no') $v.sshpassword
+Write-Step 'sshd: root login off' ($v.sshroot -eq 'no') $v.sshroot
 
 if ($failed -gt 0) { exit 1 }
 exit 0
