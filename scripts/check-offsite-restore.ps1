@@ -2,10 +2,11 @@
 # Decrypts in WSL and restores into a throwaway container with NO network (same pattern as restore-check.ps1), then compares row counts with the server.
 # Also checks on the server: the upload URL cannot read, no private key, no plaintext dump, timer active.
 # Run: powershell -File scripts\check-offsite-restore.ps1 -File <automation-...dump.age> [-KeyFile <WSL path>]   Exit 0 = restore works and matches, 1 = problem.
-# Prove it can fail: a copy with one byte flipped, a wrong -KeyFile, a row added after the dump. An empty server database fails the count comparison too.
+# Prove it can fail: a copy with one byte flipped, a wrong -KeyFile, -AddRowToRestored (one extra row, in the throwaway only). An empty server database fails the count comparison too.
 param(
     [Parameter(Mandatory = $true)][string]$File,
-    [string]$KeyFile = '~/.config/age/m7-backup.key'
+    [string]$KeyFile = '~/.config/age/m7-backup.key',
+    [switch]$AddRowToRestored
 )
 $ErrorActionPreference = 'Stop'
 
@@ -26,6 +27,8 @@ if ($full -match "'" -or $KeyFile -match "'") { throw 'paths must not contain a 
 $winPath = $full -replace '\\', '/'
 $keyExpr = $KeyFile -replace '^~', '"$HOME"'
 
+$extraRow = if ($AddRowToRestored) { "docker exec $Name psql -h localhost -U postgres -d $Db -v ON_ERROR_STOP=1 -qc `"insert into stripe_events (event_id, event_type, status, payload) values ('evt_test_offsite_extra', 'test', 'ignored', '{}')`"" } else { '' }
+
 try {
     $sh = @"
 set -euo pipefail
@@ -39,6 +42,8 @@ docker exec $Name pg_isready -q -h localhost -U postgres
 docker exec $Name createdb -h localhost -U postgres $Db
 age -d -i "`$key" "`$file" | docker exec -i $Name pg_restore -h localhost -U postgres -d $Db --no-owner --exit-on-error
 echo "restored=yes"
+$extraRow
+echo "marker=`$(docker exec $Name psql -h localhost -U postgres -d $Db -tAc "select count(*) from stripe_events where event_id = 'evt_test_m7a_restore'")"
 echo "counts=`$(docker exec $Name psql -h localhost -U postgres -d $Db -tAc "$CountsSql")"
 "@
     $out = @(& "$PSScriptRoot\wsl-sh.ps1" -Script $sh)
@@ -48,6 +53,8 @@ echo "counts=`$(docker exec $Name psql -h localhost -U postgres -d $Db -tAc "$Co
     $restored = (@($out | Where-Object { "$_" -eq 'restored=yes' }).Count -eq 1)
     Write-Step 'decrypted and restored into a no-network throwaway' ($restored -and $code -eq 0) "exit $code"
     if (-not $restored) { throw 'decrypt or restore failed' }
+    $marker = ("$(@($out | Where-Object { "$_" -like 'marker=*' }))" -replace '^marker=', '')
+    Write-Step 'marker row evt_test_m7a_restore restored' ($marker -eq '1') "$marker row"
     $restoredCounts = ("$(@($out | Where-Object { "$_" -like 'counts=*' }))" -replace '^counts=', '') -split ','
 
     $b64Sql = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($CountsSql))
