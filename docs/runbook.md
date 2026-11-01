@@ -194,3 +194,45 @@ the owner text still goes out (it also names the customer) and the PDF stays on 
 With `false` no document is sent and `telegram_document` is not required for `done`. To try the other value once without touching `.env`: `TELEGRAM_SEND_PDF=false docker compose up -d --no-deps n8n`, then a plain `docker compose up -d --no-deps n8n` to go back.
 
 **Rotate the `Stripe read-only` key.** In the Stripe Dashboard (test mode) create a replacement restricted key with the same three read permissions, put it into the n8n credential `Stripe read-only`, run `scripts\demo-payment.ps1` with a listener (or `scripts\e2e.ps1`) and check that the event ends `done`, then delete the old key. The key is not in `.env` and never in git.
+
+## 11. Server
+
+The M7 server: OCI Always Free, `VM.Standard.A1.Flex`, 1 OCPU, 4 GB, Ubuntu 24.04, region `eu-frankfurt-1`. No public traffic and no workflows yet (M7b). Design: `docs/tasks/m7-server.md`. The server has its own secrets; nothing from the laptop's `.env`. Never click Upgrade or Pay As You Go in OCI.
+
+**Access, only over Tailscale.** `ssh -i "$HOME\.ssh\oci_m7" ubuntu@m7-server`. Nothing publishes a port, so admin UIs go through an SSH tunnel to fixed container IPs:
+`ssh -i "$HOME\.ssh\oci_m7" -L 5678:172.30.0.10:5678 -L 8025:172.30.0.11:8025 ubuntu@m7-server`, then http://localhost:5678 (n8n) and http://localhost:8025 (Mailpit). From scripts: `scripts\server-sh.ps1 -Script '...'` (base64, so no quoting problems).
+
+**Is it healthy?**
+```powershell
+powershell -File scripts\check-server-base.ps1                              # VM matches cloud-init, 4 GB, port 22 only on tailscale0, password login off
+powershell -File scripts\check-prod-stack.ps1                               # stack up, no published ports, nothing on public addresses, memory
+powershell -File scripts\check-public-ports.ps1 -Mode Tailnet -Ip <public-ip>   # Tailscale SSH works, public SSH does not answer (no nmap)
+```
+
+**Backups.** `backup-offsite.timer` runs nightly at 03:00 (Persistent): `pg_dump -Fc` piped into `age`, uploaded with a write-only pre-authenticated URL to the bucket `m7-backups`, then a ping to the Healthchecks check `m7-server-backup` (period 1 day, grace 6 h). Any failure means no ping. Keeps 14 days (bucket lifecycle rule). Postgres only: `n8n_data` is not backed up yet (M7b). Run one by hand: `bash ~/n8n-workflows/infra/backup-offsite.sh`. Logs: `journalctl -u backup-offsite`.
+The private key is only on the laptop (`~/.config/age/m7-backup.key` in WSL) and in Bitwarden (`M7 age backup private key`). Lose both and the backups are unreadable.
+
+**Prove a backup restores.** Download the newest `.age` from the OCI console (Storage > Buckets > `m7-backups` > Objects), keep its name. `powershell -File scripts\check-offsite-restore.ps1 -File <path>` restores into a no-network throwaway on the laptop and compares with the server; it never writes to the server.
+
+**Rebuild** (last drill about 38 min: `docs/evidence.md`). Never terminate first: "out of host capacity" could leave no VM.
+1. Stop the old VM, note the time. Tailscale > Machines: remove the old `m7-server`. Laptop: `ssh-keygen -R m7-server`.
+2. Tailscale > Settings > Keys: new key, Reusable off, Ephemeral off, expiry 1 day.
+3. Compute > Instances > Create: `m7-server`, Ubuntu 24.04, `VM.Standard.A1.Flex`, 1 OCPU, 4 GB, `m7-vcn` public subnet, public IPv4, paste `oci_m7.pub`. Advanced options > Management: paste `infra/cloud-init.yaml`, replacing `__TAILSCALE_AUTHKEY__` in that box only. "Out of host capacity": try the other availability domains, then later off-peak. No scripts that hammer the API.
+4. Instance > Oracle Cloud Agent: Compute Instance Monitoring enabled. Tailscale > Machines > `m7-server`: disable key expiry. Keys: the auth key is used.
+5. On the VM: `ssh-keygen -t ed25519 -f ~/.ssh/repo_deploy -N "" -C m7-server-deploy`. GitHub > Settings > Deploy keys: add the `.pub`, write access off. Clone with `git clone -c core.sshCommand="ssh -i ~/.ssh/repo_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new" git@github.com:mahmoudsamae/n8n-automation-platform.git ~/n8n-workflows`.
+6. `cd ~/n8n-workflows && cp infra/env.example .env && chmod 600 .env`, fill it from the Bitwarden items `M7 server POSTGRES_PASSWORD`, `M7 server N8N_ENCRYPTION_KEY`, `M7 OCI backup write URL`, `M7 Healthchecks backup ping URL`. Do not generate new values. No migrations: the restore creates the tables.
+7. `bash infra/bootstrap.sh`. Laptop: `powershell -File scripts\server-restore.ps1 -File <newest .age>` (refuses a database that has tables), then the restore check above.
+8. Over Tailscale: `bash infra/harden-ssh.sh`. Then the three health checks.
+9. Only after green: terminate the old VM, tick **Permanently delete the attached boot volume** (the free limit counts it), remove its deploy key. Update the testing form's IP with Oracle before any further scan.
+
+**Firewall.** Security List: no TCP or UDP ingress, ICMP stays (path-MTU). Host: `/etc/iptables/rules.v4`, no UFW (Oracle: it "might cause an instance not to boot"), never `iptables-restore` (it flushes Docker's and Tailscale's chains), never touch the 169.254 rules. Port 22 is never reopened for a test.
+
+**Oracle's scan rules.** nmap against the public IP only inside the window on the filed Oracle Cloud Security Testing Request Form (`security_test_notification_grp@oracle.com`): from 5 business days after submission, at most 10 consecutive days, once per service per calendar year, non-aggressive, only the form's target and source IPs. `check-public-ports.ps1 -Mode Public` refuses anything else. If the VM or the home IP changes first, tell Oracle before testing.
+
+**The scan, inside the window, in one session.** The owner approves the iptables commands. Nothing in step 1 is saved to `rules.v4`, so a reboot also clears it.
+1. Control port, to prove this path can see an open port: Security List > add Ingress TCP 18999 from `<source-ip>/32`. On the VM: `sudo iptables -I INPUT 1 -p tcp -s <source-ip> --dport 18999 -j ACCEPT` and `nc -lk 18999`.
+2. Laptop: `tailscale down`, then `powershell -File scripts\check-public-ports.ps1 -Mode Public -Ip <public-ip> -Scope ControlPort -Port 18999 -WindowStart <start> -WindowEnd <end> -SourceIp <source-ip>`. It must report the port OPEN, exit 1.
+3. `tailscale up`. Stop `nc`, `sudo iptables -D INPUT -p tcp -s <source-ip> --dport 18999 -j ACCEPT`, delete the Security List rule. `tailscale down`, run step 2 again: no open port, exit 0.
+4. Same parameters with `-Scope Full` (all 65535 TCP ports at 100 packets/s, about 11 minutes or more). Exit 0, then `tailscale up`.
+
+**Secrets.** Rotating `POSTGRES_PASSWORD` has the same `ALTER USER` trap as section 7 (not rehearsed on the server; there is no `postgres-backup` container here). The upload URL expires after a year: create a new pre-authenticated request, update `.env` and Bitwarden, delete the old one. A new Tailscale key is needed only for a new VM; it is one-off because user-data stays readable through the metadata service.

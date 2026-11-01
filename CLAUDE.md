@@ -23,6 +23,7 @@ Intake only verifies, classifies and stores (fast). All slow work belongs to the
   `INVOICE_EMAIL_FROM` (sender of the invoice email, e.g. `Musterwerk <rechnung@musterwerk.example>`; if unset the send fails),
   `TELEGRAM_SEND_PDF` (exactly `true` or `false`, NO default: it decides whether the invoice PDF, which holds customer data, is sent to Telegram, a third party; unset or any other value fails every event with a clear `last_error`),
   `NODE_FUNCTION_ALLOW_BUILTIN`, `N8N_BLOCK_ENV_ACCESS_IN_NODE`, `GENERIC_TIMEZONE`, `TZ`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`.
+- M7 server (`ubuntu@m7-server`, Tailscale only, `docker-compose.prod.yml`, `infra/`): `docs/runbook.md` section 11. The owner approves any iptables, sshd or file-delete command there; nmap only inside Oracle's filed window; write `<public-ip>`, never the address.
 - n8n credentials: `Postgres automation` (`XVNN7sIThniqsuOf`, DB and user `automation`), `Mailpit SMTP` (`nxXABuEVvevioUzb`, host `mailpit`:1025, no history across restarts), `Telegram alerts` (`kNsPsjXulOh7i4RQ`; chat id = `$env.TELEGRAM_CHAT_ID`),
   `Stripe read-only` (`qtmzPq7nRsOF9MAW`, restricted test-mode key: Checkout Sessions, PaymentIntents, Charges read; only the Processor's one lookup per invoice; never print it).
 - `STRIPE_WEBHOOK_SECRET` must equal the `whsec_...` that `stripe listen` prints (on STDERR), or every event gets 400.

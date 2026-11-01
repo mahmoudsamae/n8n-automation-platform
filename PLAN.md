@@ -12,7 +12,8 @@ Pipeline: Stripe -> Intake -> `stripe_events` -> Processor -> Mailpit + Telegram
 | M6a | Portfolio packaging, part 1: README reviewed and updated for M5, `docs/evidence.md`, stale-timestamp check, new proofs, case study (EN/DE) | IN REVIEW: PR open on `m6a-portfolio-readme`, not merged. `scripts/e2e.ps1` 42/42 (see "Results" in the M6 section) |
 | INV | Invoice design: German invoice (HTML email, plain text, PDF via Gotenberg) rendered only from the stored invoice row by the sub-workflow `Stripe Render Invoice`; one read-only Stripe lookup for product and payment method; owner Telegram text plus optional PDF document (`TELEGRAM_SEND_PDF`) through the shared sub-workflow `Stripe Send Telegram` | IN PROGRESS: branch `invoice-design` (PR not opened yet, never merge before review). `scripts/e2e.ps1` 51/51, proofs in `docs/evidence.md` (section "Invoice, PDF and Telegram"). Not proven: real Stripe and Telegram 429/5xx, `sendDocument` failing. Open before the PR: secret scan, push |
 | M6b | Portfolio packaging, part 2: Mailpit volume, daily n8n export, clean-clone files and check, demo reset, `DEMO.md` | NEXT, after M6a is merged |
-| M7 | Public live demo (see the M7 section) | TODO. Criteria are written in their own session, not before |
+| M7a | Server foundation: free OCI VM from the repo, zero public ports, encrypted offsite backups, timed rebuild drill (`docs/tasks/m7-server.md`) | IN REVIEW: PR open on `m7a-foundation`, not merged. Rebuild drill about 38 min. **Pending:** nmap from outside, in Oracle's testing window; form to be sent by 2 Nov 2026, earliest scan 9 Nov (see the M7 section) |
+| M7b, M7c | Stack and tunnel; demo experience (see the M7 section and the spec) | TODO, after M7a |
 
 ## M3: Stripe Processor
 
@@ -264,7 +265,25 @@ Acceptance criteria:
 7. **Public repo (flipped by the owner after M6a, before M6b):** a rendered-README check while logged out, including the Mermaid diagrams, as soon as it is public; when M6b lands, the README's "Setup" limit is replaced by the verified setup steps and the history scan is repeated.
 8. **Done means:** e2e summary shown, runbook section 8 and known limits updated, PLAN.md and CLAUDE.md updated, M6 marked done.
 
-## M7: Public live demo (TODO)
+## M7: Public live demo
+
+Spec: `docs/tasks/m7-server.md`. Proofs: `docs/evidence.md` section "M7a server". Operations: `docs/runbook.md` section 11.
+
+### M7a follow-ups (not blocking the PR except the first)
+- **Before merge:** the scans in Oracle's window (runbook section 11), output added to the evidence and the PR.
+- 7 days after the rebuild (from 2026-11-08): read Oracle's `MemoryUtilization` for the 4 GB VM, compare with `free -m`, record it. Idle was 24-26% by `free -m`, so a metric that ignores cache stays above 20% only narrowly.
+- Day 15 after the first backup (from 2026-11-15): check the bucket's lifecycle rule really deleted the oldest object. Keep the first object until then, it is the test.
+- Move backups to R2 before real data: a closed Oracle account loses the backups too.
+- The pre-authenticated upload URL expires after one year.
+
+### M7b requirements found in M7a
+- Back up the n8n export too. `N8N_ENCRYPTION_KEY` alone saves nothing: credentials live in the `n8n_data` volume, which is not backed up.
+- Block containers from the instance metadata service, and require IMDSv2 only (the VM has "Require an authorization header" on; confirm it is kept by every rebuild). User-data, with the spent Tailscale key, stays readable through it.
+- Re-run the drill to "e2e green": that number goes in the README, not M7a's 38 minutes.
+- The drill's new VM has a new public IP that Oracle's form does not list. A scan of it needs a new form, and if 2026's test is used up, it waits for 2027. Until then the proof is the Security List.
+- Re-measure memory with workflows, `cloudflared` and real PDF renders: all `mem_limit` values add up to 2,688 MB today on a 4 GB VM.
+
+### Before M7a
 
 **Constraint from the invoice work:** invoice numbers are sequential and guessable, and an invoice shows a customer name and payment details. M7 must not serve a PDF by invoice number alone: a visitor link needs an unguessable token. The renderer (`Stripe Render Invoice`, input `invoice_number`) is meant to be reused so page and email cannot drift apart; the token check belongs in front of it. Decided in M7's criteria session, not built.
 

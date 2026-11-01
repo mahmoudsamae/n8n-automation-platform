@@ -353,11 +353,90 @@ One bug in the docs check was found by running it: its relative path display use
 
 ### Memory sizing
 
-First VM, 1 OCPU, 6 GB, idle M7a stack with no workflows, `free -m` on 2026-11-01: 1,059 MB used of 5,901 MB (about 18%), 4,401 MB cache. That is under Oracle's 20% reclamation line if its metric ignores cache, so the rebuilt VM uses 1 OCPU, 4 GB. The same use would be about 27% of 4 GB: a calculation, not a measurement, until the rebuilt VM's `free -m` is recorded here. Oracle reclaims only if CPU and network are under 20% as well.
+First VM, 1 OCPU, 6 GB, idle M7a stack with no workflows, `free -m` on 2026-11-01: 1,059 MB used of 5,901 MB (about 18%), 4,401 MB cache. That is under Oracle's 20% reclamation line if its metric ignores cache, so the rebuilt VM uses 1 OCPU, 4 GB.
+
+Rebuilt VM, 1 OCPU, 4 GB, same stack: 1,016 MB used of 3,895 MB (about 26%) after the restore, and 928 MB (about 24%) after the reboot. Oracle reclaims only if CPU and network are under 20% as well. Oracle's own metric was not compared yet (see "Not proven").
+
+```
+NAME        MEM USAGE / LIMIT   CPU %
+n8n         382.2MiB / 1.5GiB   0.51%
+postgres    39.95MiB / 512MiB   0.06%
+gotenberg   7.887MiB / 512MiB   0.01%
+mailpit     9.086MiB / 128MiB   0.00%
+```
+
+### Rebuild drill
+
+All times Berlin (CET, UTC+1), 2026-11-01. The old VM was stopped first, so the new one could not lean on it, and terminated only after green. **About 38 minutes** from Stop to "stack healthy, restored counts match", including the owner's console work. M7a has no workflows: M7b re-runs the drill to "e2e green", and that number goes in the README.
+
+| Time (UTC) | Event |
+|---|---|
+| 09:46 (08:46) | Old VM stopped, to the minute. Clock starts |
+| 10:02:23 (09:02:23) | New VM booted from `infra/cloud-init.yaml`; it never had public SSH |
+| 10:22:56 (09:22:56) | `bootstrap.sh` run twice: container ids and start times unchanged |
+| 10:23:31 (09:23:31) | `server-restore.ps1` finished, from the nightly backup taken on the old VM |
+| **10:23:46 (09:23:46)** | **All counts match, stack check green. Clock stops** |
+| 10:24:07 (09:24:07) | `harden-ssh.sh` done, base check and SSH check green |
+| 10:24:31 (09:24:31) | One reboot. SSH rule, `rpcbind` off, timer, containers and the marker row all survived, all checks green |
+
+Before the restore the same check failed on the empty database, as it must:
+```
+[PASS] marker row evt_test_m7a_restore restored - 1 row
+[FAIL] stripe_events: restored matches server - server= restored=1
+exit: 1
+```
+After the restore:
+```
+[PASS] file is age-encrypted - age-encryption.org/v1
+[PASS] decrypted and restored into a no-network throwaway - exit 0
+[PASS] marker row evt_test_m7a_restore restored - 1 row
+[PASS] stripe_events: restored matches server - server=1 restored=1
+[PASS] side_effects: restored matches server - server=0 restored=0
+[PASS] invoices: restored matches server - server=0 restored=0
+[PASS] event_replays: restored matches server - server=0 restored=0
+[PASS] invoice_number_seq: restored matches server - server=1/false restored=1/false
+[PASS] upload URL cannot read an object - HTTP 404
+[PASS] upload URL cannot list the bucket - HTTP 404
+[PASS] no age private key on the server - 0 key files, 0 files with key text
+[PASS] no plaintext dump on the server disk - 0 found
+[PASS] backup timer active - active
+check-offsite-restore exit: 0
+```
+
+### Checks, made to fail
+
+| Check | Provoked with | Result |
+|---|---|---|
+| `check-public-ports.ps1 -Mode Tailnet` | First VM, before the SSH rule was deleted | `[FAIL] SSH to the public IP does not answer`, exit 1; a login through `<public-ip>` printed `m7-server`. Passed after the rule was deleted |
+| `check-public-ports.ps1 -Mode Public` | No window given, and a window that has not opened | `FAIL`, exit 1, no nmap process started |
+| `check-server-base.ps1`: user-data | First VM, after `infra/cloud-init.yaml` changed | `[FAIL] VM user-data equals the repository file`. Passes on the rebuilt VM |
+| `check-server-base.ps1`: memory | The first 6 GB VM against the 4 GB default | `[FAIL] memory (GB) - 6.0` |
+| `check-server-base.ps1`: iptables | Before `harden-ssh.sh` | `[FAIL] iptables: port 22 only on tailscale0 - 1 rule(s), 1 public` |
+| `check-prod-stack.ps1`: listeners | The image's `rpcbind`, found by this check | `[FAIL] ... 0.0.0.0:111, [::]:111`. Fixed in cloud-init |
+| `check-prod-stack.ps1`: ports, limits | Throwaway container with `-p 127.0.0.1:18999:8025` | `[FAIL] no container publishes a port`, `[FAIL] every container has a memory limit`, exit 1 |
+| `check-prod-stack.ps1 -StaticOnly -ComposeFile` | Copies with `ports:`, `:latest`, no `mem_limit` | `FAIL`, exit 1 (also: compose refuses a missing `N8N_ENCRYPTION_KEY`) |
+| `bootstrap.sh` | `.env` at mode 644 | `[FAIL] .env has mode 644, must be 600`, exit 1 |
+| `harden-ssh.sh` | Session variable removed, so not "over Tailscale" | `[FAIL] this session did not come in over Tailscale, refusing`, exit 1, iptables unchanged |
+| `backup-offsite.sh` | Postgres stopped | Exit 1, stopped at the dump, no upload and no ping |
+| `backup-offsite.sh` | Unresolvable upload URL, temp copy with a fake `.env` | Exit 6, no ping |
+| `check-offsite-restore.ps1` | One byte flipped | `age: error: failed to decrypt and authenticate payload chunk`, exit 1 |
+| `check-offsite-restore.ps1` | Wrong key | `age: error: no identity matched any of the recipients`, exit 1 |
+| `check-offsite-restore.ps1` | `-AddRowToRestored`, throwaway only | `[FAIL] stripe_events: restored matches server - server=1 restored=2`, exit 1 |
+| `server-restore.ps1` | Second restore onto the restored database | `[FAIL] the server's database is not empty`, exit 1 |
+
+### Findings from the live VM
+
+- **Port 22 on the first VM** was open from 12:16 (11:16 UTC) until between 13:02 and 13:05 (12:02-12:05 UTC) on 2026-10-31. SSH log: 5 logins, all by key, 3 over Tailscale and 2 from the laptop's tests, no password attempt, 1 outside probe with an empty username. The log starts at 12:29, so 12:16-12:29 is not covered. The rebuilt VM never had the rule.
+- **`rpcbind`** came with the image and listened on all addresses. Nothing uses NFS, so cloud-init turns it off. The stack check only looked at TCP until then.
+- **The check itself was wrong once:** OCPU and memory compared `1.0` with `1` as text, so they failed on a correct VM. They compare numbers now.
 
 ## Not proven
 
+- **Zero open ports by nmap from outside: pending Oracle's testing window.** Oracle requires a filed form, 5 business days' notice, and one test per service per calendar year. Until then the proof is indirect: the Security List has no TCP or UDP ingress rule, iptables ends in `REJECT`, and public SSH does not answer. UDP stays unproven by nmap either way (it reports `open|filtered`).
+- A rebuilt VM gets a new public IP that the form does not list, so a scan of the M7b drill's VM needs a new form and possibly the next calendar year.
 - How Oracle's `MemoryUtilization` treats page cache, and the reading after 7 days on the 4 GB VM.
+- That the bucket's lifecycle rule really deletes after 14 days: only the rule's existence was seen, by the owner.
+- A nightly timer run on the rebuilt VM. The first VM's run at 03:01 was reported green by the owner: Healthchecks green, 2 objects in the bucket.
 - Telegram 429/5xx backoff against a real error. The retry code is in `Stripe Send Telegram` and Send Alert, but no real 429 or 5xx was ever provoked. The retry loop's mechanics were proven with a stub; a failing `sendDocument` call and a real Stripe 429/5xx on the invoice lookup were not provoked either.
 - Several PDFs rendered at the same moment (memory gate), and Gotenberg under the memory cap with a much longer invoice.
 - How the email looks in mail clients other than Mailpit: some (Gmail among them) strip inline SVG, so the logo may be missing there; the layout survives without it.
