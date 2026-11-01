@@ -60,7 +60,6 @@ Applied by the user (002-006; the user runs migrations, Claude never does, and c
 - Seed a test row in a chosen state (stuck, stale, dead) with `scripts\seed-test-event.ps1`; it copies a real done payload and accepts only `evt_test_` ids.
 - Test rows use `event_id LIKE 'evt_test_%'`; delete only via `scripts/clean-test-event.ps1 -Id evt_test_... [-DryRun]` (FK order, all RESTRICT: `event_replays`, `side_effects`, `invoices`, `stripe_events`). `scripts/e2e.ps1` events have real `evt_...` ids, tagged by Stripe metadata `e2e=true`: the `evt_test_` filter misses them.
 - `scripts/check-stale-timestamp.ps1` (run by e2e) sends validly signed old and fresh requests (rows `evt_test_e2e_stale_*` removed before and after). Prove it can fail with `-AgeSeconds 0` and `-CorruptSignature`; outputs live in `docs/evidence.md`.
-
 - `scripts/demo-payment.ps1 [-Tag e2e]` fires ONE 30,00 EUR demo payment (needs `stripe listen` running) and retries Stripe's flaky `checkout_amount_mismatch` (Adaptive Pricing is on in the sandbox; the same command succeeds next try).
 - `scripts/check-invoice-delivery.ps1 -EventId ... -InvoiceNumber ...` (e2e runs it 3 times): row, exactly 1 email with 1 real PDF, `telegram_document` side effect. Prove it can fail: `-ExpectedAttachments 2`, `-SubjectPrefix 'Rechnung '`, `-ExpectedAmountCents 3100`, `-ExpectTelegramDocument $false`.
 - Test rows needing a payload edit: seed `-Status failed -Attempts 5` (dead, unclaimable), edit the payload (name = invoice customer, `object.id` = looked-up session), then `status='pending', attempts=0`.
@@ -82,8 +81,8 @@ Applied by the user (002-006; the user runs migrations, Claude never does, and c
 - `wsl <cmd>` runs through an outer shell that expands `$VAR` and `$(...)` first (this once printed a secret in an error message), and PowerShell 5.1 prepends a BOM when piping to `wsl`.
   Run anything with `$`, quotes or secrets through `& scripts\wsl-sh.ps1 -Script '...'` (base64); the hook `scripts/hooks/wsl-quoting-guard.mjs` blocks the unsafe forms (test: `node scripts/hooks/wsl-quoting-guard.test.mjs`).
 - PowerShell 5.1: `Get-Date -UFormat %s` is the LOCAL epoch (3600 s ahead in Berlin). Use `[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()` for anything compared with a server clock (it made a "stale timestamp" test send a future one).
-  Also, a pipeline that yields ONE string is not an array: `(... | Where-Object {...})[0]` returns its first character. Wrap in `@(...)` before indexing or counting.
-- PowerShell 5.1 mangles embedded double quotes in native arguments: use `git commit -F file`, `gh pr create --body-file`, and parse `gh ... --json` with ConvertFrom-Json (not `--jq` with spaces).
+  Also, a pipeline that yields ONE string is not an array: `(... | Where-Object {...})[0]` returns its first character. Wrap in `@(...)` before indexing or counting. But `@('[]' | ConvertFrom-Json).Count` is 1, not 0: read the raw JSON for "none".
+- PowerShell 5.1 mangles embedded double quotes in native arguments: use `git commit -F file`, `gh pr create --body-file` (a new file name per PR: a failed Write once published an old PR's body; check with `gh pr view`), and parse `gh ... --json` with ConvertFrom-Json (not `--jq` with spaces).
 - `docker compose up -d` re-reads `~/n8n/.env`; `restart` does not. Recreating n8n drops the n8n MCP connection, sometimes for a long time: list executions with `scripts\n8n-executions.ps1` (reads n8n's SQLite, read-only).
 - The official postgres image TRUSTS `local`, `127.0.0.1` and `::1` inside the `postgres` container: any password works there. Test password auth from another container (`docker exec -e PGPASSWORD postgres-backup psql -h postgres ...`), exporting the value from `.env` inside a script.
 
@@ -95,6 +94,5 @@ Applied by the user (002-006; the user runs migrations, Claude never does, and c
 - Task specs live in `docs/tasks/` (long pasted prompts get truncated). Point to the file instead of pasting.
 - Every change to a live workflow must be exported to its `.sdk.ts` file in the same session, then diffed.
 - Never print or log secrets (signing secrets, tokens, DB passwords, the heartbeat URL). Redact `whsec_` before showing any output.
-- Ask before deleting files, rewriting git history, or running DB migrations (schema changes need approval).
 - Before declaring any workflow change done, run `scripts/e2e.ps1` and show the summary.
 - Stripe stays in sandbox permanently (portfolio project). Nothing goes live; the live-mode checklist is documentation for a hypothetical client.
