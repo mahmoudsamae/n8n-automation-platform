@@ -1,0 +1,65 @@
+#cloud-config
+# First boot of the M7 server (Ubuntu 24.04, VM.Standard.A1.Flex). No secrets in this file.
+# Paste it into the OCI console (Advanced options > Management > Paste cloud-init script) and replace __TAILSCALE_AUTHKEY__ IN THAT BOX ONLY.
+# The key must be one-off: user-data stays readable through the instance metadata service, so after first boot the key has to be worthless.
+# scripts\check-server-base.ps1 proves the VM really booted from this file (hash of its user-data, key swapped back to the placeholder).
+
+hostname: m7-server
+timezone: Europe/Berlin
+
+package_update: true
+package_upgrade: true
+packages:
+  - age
+  - ca-certificates
+  - curl
+  - git
+  - jq
+  - unattended-upgrades
+
+swap:
+  filename: /swapfile
+  size: 2G
+  maxsize: 2G
+
+write_files:
+  - path: /etc/docker/daemon.json
+    permissions: "0644"
+    content: |
+      {
+        "log-driver": "json-file",
+        "log-opts": { "max-size": "10m", "max-file": "3" }
+      }
+  - path: /etc/systemd/journald.conf.d/m7-limits.conf
+    permissions: "0644"
+    content: |
+      [Journal]
+      SystemMaxUse=200M
+  - path: /etc/apt/apt.conf.d/20auto-upgrades
+    permissions: "0644"
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+  - path: /usr/local/sbin/m7-firstboot.sh
+    permissions: "0700"
+    content: |
+      #!/bin/bash
+      # Docker Engine and Tailscale from their own apt repositories, as their install docs describe. Stops at the first error.
+      set -euo pipefail
+      install -m 0755 -d /etc/apt/keyrings
+      curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+      chmod a+r /etc/apt/keyrings/docker.asc
+      codename="$(. /etc/os-release && echo "$VERSION_CODENAME")"
+      echo "deb [arch=arm64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $codename stable" > /etc/apt/sources.list.d/docker.list
+      curl -fsSL "https://pkgs.tailscale.com/stable/ubuntu/$codename.noarmor.gpg" -o /usr/share/keyrings/tailscale-archive-keyring.gpg
+      curl -fsSL "https://pkgs.tailscale.com/stable/ubuntu/$codename.tailscale-keyring.list" -o /etc/apt/sources.list.d/tailscale.list
+      apt-get update
+      apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin tailscale
+      usermod -aG docker ubuntu
+      systemctl enable --now docker tailscaled
+
+runcmd:
+  # The image's rpcbind listens on all addresses and nothing here uses NFS.
+  - systemctl disable --now rpcbind.socket rpcbind.service
+  # Tailscale's Oracle guide requires --accept-dns=false: Oracle keeps handling DNS. Last on purpose: a joined node means the setup above finished.
+  - /usr/local/sbin/m7-firstboot.sh && tailscale up --auth-key=__TAILSCALE_AUTHKEY__ --hostname=m7-server --accept-dns=false
