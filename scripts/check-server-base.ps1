@@ -4,7 +4,7 @@
 param(
     [string]$CloudInitFile = (Join-Path (Split-Path -Parent $PSScriptRoot) 'infra\cloud-init.yaml'),
     [int]$ExpectedOcpus = 1,
-    [int]$ExpectedMemoryGb = 6,
+    [int]$ExpectedMemoryGb = 4,
     [string]$ExpectedShape = 'VM.Standard.A1.Flex'
 )
 $ErrorActionPreference = 'Stop'

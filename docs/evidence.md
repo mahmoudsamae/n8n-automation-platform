@@ -349,8 +349,15 @@ Docs check: a line limit of 50 gives `[FAIL] CLAUDE.md has 99 lines, limit is 50
 
 One bug in the docs check was found by running it: its relative path display used the wrong offset when the temp path was an 8.3 short name, so the failure message was garbled. Fixed, and the broken-link case re-run.
 
+## M7a server
+
+### Memory sizing
+
+First VM, 1 OCPU, 6 GB, idle M7a stack with no workflows, `free -m` on 2026-11-01: 1,059 MB used of 5,901 MB (about 18%), 4,401 MB cache. That is under Oracle's 20% reclamation line if its metric ignores cache, so the rebuilt VM uses 1 OCPU, 4 GB. The same use would be about 27% of 4 GB: a calculation, not a measurement, until the rebuilt VM's `free -m` is recorded here. Oracle reclaims only if CPU and network are under 20% as well.
+
 ## Not proven
 
+- How Oracle's `MemoryUtilization` treats page cache, and the reading after 7 days on the 4 GB VM.
 - Telegram 429/5xx backoff against a real error. The retry code is in `Stripe Send Telegram` and Send Alert, but no real 429 or 5xx was ever provoked. The retry loop's mechanics were proven with a stub; a failing `sendDocument` call and a real Stripe 429/5xx on the invoice lookup were not provoked either.
 - Several PDFs rendered at the same moment (memory gate), and Gotenberg under the memory cap with a much longer invoice.
 - How the email looks in mail clients other than Mailpit: some (Gmail among them) strip inline SVG, so the logo may be missing there; the layout survives without it.

@@ -28,7 +28,7 @@ A recruiter opens one link, pays with a Stripe test card, and sees their own inv
 ### 2. Right-size the VM against idle reclamation
 
 - Oracle may reclaim an Always Free VM when, over 7 days, CPU p95 < 20% **and** network < 20% **and** (A1 only) memory < 20%. All three must be true.
-- The stack uses about 2 GB. On a 12 GB VM that is under 20% memory; on a **1 OCPU / 6 GB** VM it is about a third. So: shape `VM.Standard.A1.Flex`, **1 OCPU, 6 GB**. This also leaves half of the free allowance for a second VM later.
+- Measured on a first 6 GB VM with the idle M7a stack (no workflows): `free -m` used 1,059 MB of 5,901 MB, about 18%, plus 4,401 MB of cache. That is under 20% if Oracle's metric ignores cache. On **4 GB** the same use is about 27%, so it stays above the line either way. The stack already runs in 2 GB on the laptop. So: shape `VM.Standard.A1.Flex`, **1 OCPU, 4 GB**. All `mem_limit` values add up to 2,688 MB, which fits. This leaves 1 OCPU and 8 GB of the free allowance.
 - **[VERIFY, needs the server]** how Oracle measures memory utilization (with or without page cache). Oracle's doc says only "Measured by pages... percentage of used pages". Enable the Oracle Cloud Agent monitoring plugin, compare `MemoryUtilization` with `free -m`, and record the metric after 7 days.
 - No artificial CPU or network load. If reclamation still happens, the rebuild drill (below) is the answer, and Hetzner CX23 is the fallback.
 
