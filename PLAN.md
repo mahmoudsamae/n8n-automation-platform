@@ -13,6 +13,7 @@ Pipeline: Stripe -> Intake -> `stripe_events` -> Processor -> Mailpit + Telegram
 | INV | Invoice design: German invoice (HTML email, plain text, PDF via Gotenberg) rendered only from the stored invoice row by the sub-workflow `Stripe Render Invoice`; one read-only Stripe lookup for product and payment method; owner Telegram text plus optional PDF document (`TELEGRAM_SEND_PDF`) through the shared sub-workflow `Stripe Send Telegram` | IN PROGRESS: branch `invoice-design` (PR not opened yet, never merge before review). `scripts/e2e.ps1` 51/51, proofs in `docs/evidence.md` (section "Invoice, PDF and Telegram"). Not proven: real Stripe and Telegram 429/5xx, `sendDocument` failing. Open before the PR: secret scan, push |
 | M6b | Portfolio packaging, part 2: Mailpit volume, daily n8n export, clean-clone files and check, demo reset, `DEMO.md` | NEXT, after M6a is merged |
 | M7a | Server foundation: free OCI VM from the repo, zero public ports, encrypted offsite backups, timed rebuild drill (`docs/tasks/m7-server.md`) | PR #7, merged by the owner with one line open. Rebuild drill about 38 min. **Pending:** nmap from outside, in Oracle's testing window, then a small evidence PR; form to be sent by 2 Nov 2026, earliest scan 9 Nov (see the M7 section) |
+| Guards | Destructive-command guards: helper guard, PreToolUse hook (see "Safety guards") | NEXT TASK, not built. The `~/.claude/settings.json` rules are live and proven |
 | M7b, M7c | Stack and tunnel; demo experience (see the M7 section and the spec) | TODO, after M7a |
 
 ## M3: Stripe Processor
@@ -263,7 +264,28 @@ Acceptance criteria:
 5. **Fresh-clone check:** a new folder, following only the README. The live stack is stopped with `compose down` (no `-v`) and the heartbeat paused, because `container_name` and fixed ports block running both. The owner runs the migrations. Passes when `e2e.ps1` and the guard scripts pass; date and result go in the README. A step that needs outside knowledge is a README bug. Live is then brought back and verified with e2e. Whether imported workflows re-link to hand-made credentials is untested and this check will show it.
 6. **`DEMO.md`:** a 2-minute script with timestamps, exact commands, what is on screen, and a marked cut for the Processor's wait of up to 60 s; rehearsed once with a stopwatch. `stripe listen` prints `whsec_` on STDERR, so redirect it to a file; never on screen: the heartbeat URL, the Telegram chat ID, `ALERT_EMAIL_TO` in Mailpit. The owner records the video.
 7. **Public repo (flipped by the owner after M6a, before M6b):** a rendered-README check while logged out, including the Mermaid diagrams, as soon as it is public; when M6b lands, the README's "Setup" limit is replaced by the verified setup steps and the history scan is repeated.
+7a. **Branch protection:** the owner turns it on for `main` when the repo goes public. `main` is unprotected today, and the repo is private.
 8. **Done means:** e2e summary shown, runbook section 8 and known limits updated, PLAN.md and CLAUDE.md updated, M6 marked done.
+
+## Safety guards (next task)
+
+**Why:** `scripts/wsl-sh.ps1` and `scripts/server-sh.ps1` send the script as base64, so a permission rule cannot see a `DROP` or `down -v` inside a file or a variable. The owner approved this design on 2026-11-01. These guards stop mistakes, not a determined attacker.
+
+**Live and proven, 2026-11-01 (`~/.claude/settings.json`, not in this repo):**
+- Deny, Bash and PowerShell: `*compose*down*-v*`, `*compose*down*--volumes*`, `*docker volume rm*`, `*docker volume remove*`, `*docker volume prune*`, `*docker system prune*--volumes*`. Denied with `--help` probes: direct, through `wsl`, inside `wsl ... bash -c`, through `wsl-sh.ps1 -Script`. Also denied: a multi-line here-string and uppercase `DOCKER VOLUME RM`.
+- Ask, Bash and PowerShell: `*gh pr*merge*`, `*pulls/*/merge*`, `*clean-test-event*` (approved decision 1). All probed in `gh pr merge` (both shells), the API form and `clean-test-event.ps1` prompted, and the owner answered No.
+- Known bypass, shown: `d=docker; $d volume rm --help` was not denied; it only stopped because Git Bash has no `docker`.
+
+**To build, on its own branch and PR:**
+1. **Helper guard:** `scripts/lib/destructive-guard.ps1`, called by both helpers before encoding, on the final text (`-Script`, `-File`, piped). Refuses, ignoring case: `\bdrop\b`, `\btruncate\b`, `delete from`, `compose ... down` with `-v` or `--volumes`, `volume rm`, `remove` or `prune`, `dropdb`, `dropuser`, `pg_restore --clean`, `system prune --volumes`, `/var/lib/docker/volumes`. No override switch: the owner runs a truly destructive command by hand.
+2. **Hook:** `scripts/hooks/destructive-guard.mjs`, PreToolUse on PowerShell and Bash. It fires only when the command contains an executor (`wsl`, `docker`, `psql`, `ssh`, `bash`, `sh`, a helper), decodes literal base64 and scans a `-File` target. Exit 2 blocks. Node test file, proven able to fail.
+3. **One pattern list:** `scripts/lib/destructive-patterns.json`, read by both, so they cannot drift.
+4. **Decision 2, approved:** ask rules for `Edit` and `Write` on both helpers, `scripts/lib/destructive-*` and `scripts/hooks/**`. Add them last, or building the guards prompts on every file.
+5. **Decision 1, approved, already live:** direct `clean-test-event.ps1` calls prompt. e2e's nested call through `check-stale-timestamp.ps1` stays an exception: a rule cannot see it, and e2e needs it to remove its own test rows.
+
+**Proofs, with commands harmless even if a guard fails:** both helpers get files containing `echo "DROP TABLE x"` and so on per pattern: each refused with no output, a control `echo ok` passes, for `-Script`, `-File` and piped. The hook gets `echo` versions and a base64 blob. Regression: `check-server-base`, `check-prod-stack`, `check-backup-health`. `CLAUDE.md` is at its 100-line limit: fold the note into the `wsl-sh` line.
+
+**Still open after that:** text built at runtime, files one level down (`psql -f`), other routes (Docker socket, Python), MCP tools and n8n workflows. The M7b Postgres role is the hard boundary for the database.
 
 ## M7: Public live demo
 
@@ -275,9 +297,9 @@ Spec: `docs/tasks/m7-server.md`. Proofs: `docs/evidence.md` section "M7a server"
 - Day 15 after the first backup (from 2026-11-15): check the bucket's lifecycle rule really deleted the oldest object. Keep the first object until then, it is the test.
 - Move backups to R2 before real data: a closed Oracle account loses the backups too.
 - The pre-authenticated upload URL expires after one year.
-- After the merge: the server's clone is on `m7a-foundation`; switch it to `main`, so `bootstrap.sh`'s `git pull --ff-only` keeps working.
 
 ### M7b requirements found in M7a
+- Give n8n its own Postgres role without DDL rights (no DROP, TRUNCATE or ALTER). The owner role stays for migrations, which the owner runs. This is the hard boundary: text guards can be bypassed, and they never see an n8n Postgres node.
 - Back up the n8n export too. `N8N_ENCRYPTION_KEY` alone saves nothing: credentials live in the `n8n_data` volume, which is not backed up.
 - Block containers from the instance metadata service, before any public traffic: the n8n container can read it today (checked 2026-11-01, even with IMDSv2's header). User-data, with the spent Tailscale key, is readable through it. Also confirm "Require an authorization header" on every rebuild.
 - Alert when the stack or VM is down: today only the nightly backup ping notices, after up to about 30 hours. Fine with no traffic, not with a public demo (the spec's outside uptime check).
