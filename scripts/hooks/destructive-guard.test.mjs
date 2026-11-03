@@ -21,7 +21,9 @@ if (process.argv.includes('--prove-failure')) {
     writeFileSync(stub, code);
     const r = spawnSync(process.execPath, [fileURLToPath(import.meta.url)], { env: { ...process.env, DESTRUCTIVE_GUARD_HOOK: stub }, encoding: 'utf8' });
     const summary = r.stdout.trim().split('\n').pop();
-    const ok = r.status === 1;
+    // Exit 1 alone is not enough: a suite that crashes before running any case also exits 1.
+    const m = summary.match(/^(\d+)\/(\d+) cases behaved$/);
+    const ok = r.status === 1 && m !== null && Number(m[1]) < Number(m[2]);
     if (!ok) passedStubs++;
     console.log(`${ok ? 'PASS' : 'FAIL'}  ${name} stub makes the suite fail  -> ${summary}, exit ${r.status}`);
   }
