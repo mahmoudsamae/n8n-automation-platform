@@ -14,7 +14,7 @@ Intake only verifies, classifies and stores (fast). All slow work belongs to the
 
 ## Infra
 - n8n, postgres, mailpit, postgres-backup, gotenberg run via docker compose in WSL Ubuntu: `~/n8n/docker-compose.yml`.
-  Start: `wsl -d Ubuntu bash -c "cd ~/n8n && docker compose up -d"`. Ports: n8n :5678, postgres 127.0.0.1:5432, Mailpit UI :8025.
+  Start: `wsl -d Ubuntu bash -c "cd ~/n8n && docker compose up -d"`. Ports: n8n :5678, postgres 127.0.0.1:5432, Mailpit UI :8025. WSL powers off ~15 s after the last `wsl` client exits (Docker with it): keep a WSL terminal open; after each boot `postgres-backup` logs `backup FAILED` until its 5 min retry.
 - `gotenberg` (`gotenberg/gotenberg:8.39.0-chromium`) renders the invoice PDF: no published port (`http://gotenberg:3000`), 512m mem and swap limit, JS and webhooks off. Idle about 360-410 MB (resident Chromium, mostly reclaimable cache). Memory gate: `docs/evidence.md`.
 - `postgres-backup`: `pg_dump -Fc` at start + every 24 h into `~/n8n/backups/` (mode 600, never in git: customer emails), 5 min retry, 14-day prune. Postgres only: n8n workflows (SQLite in `n8n_data`) are NOT backed up. Drill: `scripts/restore-check.ps1 [-Fresh]`.
 - e2e also runs `scripts/check-sdk-drift.ps1` (each `.sdk.ts` vs the live export; first run does `npm ci` in `scripts/sdk-drift`), `scripts/check-docs.ps1` (this file <= 100 lines, no broken links, no public IP in tracked files), `scripts/check-error-workflows.ps1` (each workflow's `errorWorkflow` on live n8n) and `scripts/check-backup-health.ps1` (TCP password auth from `postgres-backup`; e2e's own psql uses the trusted socket and cannot see a wrong password).
@@ -54,6 +54,7 @@ Applied by the user (002-006; the user runs migrations, Claude never does, and c
 - Intake responses: 200 `{"received":true}` (new), 200 plus `"duplicate":true`, 400 bad signature or timestamp older than 5 min, 500 if the insert failed (so Stripe retries). Never 200 for an event that was not stored.
 
 ## Testing (PowerShell)
+- `scripts/e2e.ps1` starts its own `stripe listen` and FAILS if any stripe process already runs: never ask the owner to start one before e2e.
 - `stripe listen --all-snapshot --forward-to localhost:5678/webhook/stripe-intake` (`--all-snapshot` is required on CLI 1.55+), `stripe trigger checkout.session.completed`
   (fires ~7 events; only that one is `pending`), `stripe events resend <event_id>`.
 - Prove the 500 path by `wsl -d Ubuntu docker stop postgres`, trigger, `docker start postgres`, resend. Never edit the workflow to simulate failure.
@@ -83,7 +84,7 @@ Applied by the user (002-006; the user runs migrations, Claude never does, and c
   Both helpers (exit 3) and the hook `destructive-guard.mjs` refuse DROP, TRUNCATE, DELETE FROM, `down -v` etc. from `scripts/lib/destructive-patterns.json`; no override, the owner runs those by hand (tests: `destructive-guard.test.mjs`, `check-destructive-guard.ps1`, in e2e).
 - PowerShell 5.1: `Get-Date -UFormat %s` is the LOCAL epoch (3600 s ahead in Berlin). Use `[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()` for anything compared with a server clock (it made a "stale timestamp" test send a future one).
   Also, a pipeline that yields ONE string is not an array: `(... | Where-Object {...})[0]` returns its first character. Wrap in `@(...)` before indexing or counting. But `@('[]' | ConvertFrom-Json).Count` is 1, not 0: read the raw JSON for "none".
-- PowerShell 5.1 mangles embedded double quotes in native arguments: use `git commit -F file`, `gh pr create --body-file` (a new file name per PR: a failed Write once published an old PR's body; check with `gh pr view`), and parse `gh ... --json` with ConvertFrom-Json (not `--jq` with spaces).
+- PowerShell 5.1 mangles embedded double quotes in native arguments: use `git commit -F file` (write it with the Write tool: `Set-Content -Encoding utf8` puts a BOM into the subject), `gh pr create --body-file` (a new file name per PR: a failed Write once published an old PR's body; check with `gh pr view`), and parse `gh ... --json` with ConvertFrom-Json (not `--jq` with spaces).
 - `docker compose up -d` re-reads `~/n8n/.env`; `restart` does not. Recreating n8n drops the n8n MCP connection, sometimes for a long time: list executions with `scripts\n8n-executions.ps1` (reads n8n's SQLite, read-only).
 - The official postgres image TRUSTS `local`, `127.0.0.1` and `::1` inside the `postgres` container: any password works there. Test password auth from another container (`docker exec -e PGPASSWORD postgres-backup psql -h postgres ...`), exporting the value from `.env` inside a script.
 
