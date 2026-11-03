@@ -130,6 +130,8 @@ Write-Step 'docs: CLAUDE.md within its line limit, no broken relative links, no 
 # Safety guards: the hook blocks destructive text sent to an executor, and wsl-sh.ps1 refuses it before sending (samples only echo).
 $null = & node "$PSScriptRoot\hooks\destructive-guard.test.mjs"
 Write-Step 'destructive-guard hook: every pattern blocked, controls allowed' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
+$null = & node "$PSScriptRoot\hooks\destructive-guard.test.mjs" --prove-failure
+Write-Step 'destructive-guard test fails against allow-all and block-all stubs' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
 $null = & "$PSScriptRoot\check-destructive-guard.ps1" -Target wsl 2>$null
 Write-Step 'wsl-sh.ps1 refuses every destructive pattern (-Script, -File, piped)' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
 

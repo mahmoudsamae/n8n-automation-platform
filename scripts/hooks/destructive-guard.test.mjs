@@ -1,11 +1,35 @@
 // Proof for destructive-guard.mjs: it must BLOCK destructive text sent to an executor (exit 2, message names the pattern) and ALLOW the rest (exit 0).
 // Every pattern in scripts/lib/destructive-patterns.json is tested through its own harmless `sample` (an echo), so a new pattern cannot go untested.
 // Run: node scripts/hooks/destructive-guard.test.mjs   Exit 0 = every case behaved, 1 = a case did not.
+// Run: node scripts/hooks/destructive-guard.test.mjs --prove-failure   Runs this suite against an allow-all and a block-all stub. Exit 0 = both made it fail, 1 = a stub passed.
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+if (process.argv.includes('--prove-failure')) {
+  const stubDir = mkdtempSync(join(tmpdir(), 'destructive-guard-stubs-'));
+  const stubs = [
+    ['allow-all', 'process.exit(0);\n'],
+    // Prints the block message, so only the ALLOW cases can catch it.
+    ['block-all', "process.stderr.write('destructive-guard blocked: stub\\n'); process.exit(2);\n"],
+  ];
+  let passedStubs = 0;
+  for (const [name, code] of stubs) {
+    const stub = join(stubDir, `${name}.mjs`);
+    writeFileSync(stub, code);
+    const r = spawnSync(process.execPath, [fileURLToPath(import.meta.url)], { env: { ...process.env, DESTRUCTIVE_GUARD_HOOK: stub }, encoding: 'utf8' });
+    const summary = r.stdout.trim().split('\n').pop();
+    // Exit 1 alone is not enough: a suite that crashes before running any case also exits 1.
+    const m = summary.match(/^(\d+)\/(\d+) cases behaved$/);
+    const ok = r.status === 1 && m !== null && Number(m[1]) < Number(m[2]);
+    if (!ok) passedStubs++;
+    console.log(`${ok ? 'PASS' : 'FAIL'}  ${name} stub makes the suite fail  -> ${summary}, exit ${r.status}`);
+  }
+  rmSync(stubDir, { recursive: true, force: true });
+  process.exit(passedStubs === 0 ? 0 : 1);
+}
 
 // DESTRUCTIVE_GUARD_HOOK points the test at a stub hook, to prove the test itself can fail (a stub that allows or blocks everything must make it exit 1).
 const hook = process.env.DESTRUCTIVE_GUARD_HOOK ?? fileURLToPath(new URL('./destructive-guard.mjs', import.meta.url));
