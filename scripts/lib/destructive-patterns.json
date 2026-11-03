@@ -1,0 +1,15 @@
+{
+  "_comment": "Read by scripts/lib/destructive-guard.ps1 (wsl-sh.ps1, server-sh.ps1) and scripts/hooks/destructive-guard.mjs, so the two cannot drift. Regexes are matched case-insensitively, one line at a time, in .NET and JavaScript: use only syntax both share. Every pattern needs a harmless `sample` (an echo): the tests send it through the guards and expect it refused.",
+  "patterns": [
+    { "id": "sql-drop", "regex": "\\bdrop\\b", "why": "DROP TABLE / DATABASE / ROLE removes data or schema", "sample": "echo 'DROP TABLE x'" },
+    { "id": "sql-truncate", "regex": "\\btruncate\\b", "why": "TRUNCATE empties a table", "sample": "echo 'TRUNCATE x'" },
+    { "id": "sql-delete-from", "regex": "\\bdelete\\s+from\\b", "why": "DELETE FROM removes rows; test rows go through clean-test-event.ps1", "sample": "echo 'DELETE FROM x'" },
+    { "id": "compose-down-volumes", "regex": "\\bcompose\\b.*\\bdown\\b.*(\\s-[a-z]*v\\b|\\s--volumes\\b)", "why": "compose down -v deletes the named volumes (database, n8n data)", "sample": "echo 'docker compose down -v'" },
+    { "id": "docker-volume-delete", "regex": "\\bvolume\\s+(rm|remove|prune)\\b", "why": "deletes Docker volumes", "sample": "echo 'docker volume rm x'" },
+    { "id": "dropdb", "regex": "\\bdropdb\\b", "why": "deletes a database", "sample": "echo 'dropdb x'" },
+    { "id": "dropuser", "regex": "\\bdropuser\\b", "why": "deletes a database role", "sample": "echo 'dropuser x'" },
+    { "id": "pg-restore-clean", "regex": "\\bpg_restore\\b.*(\\s--clean\\b|\\s-c\\b)", "why": "pg_restore --clean drops objects before restoring (case-insensitive, so -C is caught too)", "sample": "echo 'pg_restore --clean x'" },
+    { "id": "system-prune-volumes", "regex": "\\bsystem\\s+prune\\b.*--volumes\\b", "why": "docker system prune --volumes deletes unused volumes", "sample": "echo 'docker system prune --volumes'" },
+    { "id": "docker-volumes-dir", "regex": "/var/lib/docker/volumes", "why": "touches volume data directly on disk", "sample": "echo '/var/lib/docker/volumes'" }
+  ]
+}
