@@ -12,6 +12,9 @@ param(
 $ErrorActionPreference = 'Stop'
 if (($Script -and $File) -or (-not $Script -and -not $File)) { throw 'give exactly one of: -Script, -File' }
 $text = if ($Script) { $Script } else { [IO.File]::ReadAllText((Resolve-Path -LiteralPath $File)) }
+# Destructive text (DROP, down -v, ...) is refused here, on the final text, before it becomes base64 that nothing else can read.
+. "$PSScriptRoot\lib\destructive-guard.ps1"
+Assert-NotDestructive $text
 $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($text -replace "`r", '')))
 # BatchMode: fail instead of hanging on a prompt. accept-new: a rebuilt VM has a new host key under the same name, see the runbook.
 & ssh -i $KeyFile -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new $Target "echo $b64 | base64 -d | bash"

@@ -12,11 +12,11 @@ Pipeline: Stripe -> Intake -> `stripe_events` -> Processor -> Mailpit + Telegram
 | M6a | Portfolio packaging, part 1: README reviewed and updated for M5, `docs/evidence.md`, stale-timestamp check, new proofs, case study (EN/DE) | DONE, merged (PR #5). `scripts/e2e.ps1` 42/42 (see "Results" in the M6 section). The repo is still private |
 | INV | Invoice design: German invoice (HTML email, plain text, PDF via Gotenberg) rendered only from the stored invoice row by the sub-workflow `Stripe Render Invoice`; one read-only Stripe lookup for product and payment method; owner Telegram text plus optional PDF document (`TELEGRAM_SEND_PDF`) through the shared sub-workflow `Stripe Send Telegram` | DONE, merged (PR #6). `scripts/e2e.ps1` 51/51, proofs in `docs/evidence.md` (section "Invoice, PDF and Telegram"). Not proven: real Stripe and Telegram 429/5xx, `sendDocument` failing |
 | M6b | Portfolio packaging, part 2: Mailpit volume, daily n8n export, clean-clone files and check, demo reset, `DEMO.md` | TODO |
-| M7a | Server foundation: free OCI VM from the repo, zero public ports, encrypted offsite backups, timed rebuild drill (`docs/tasks/m7-server.md`) | PR #7, merged by the owner with one line open. Rebuild drill about 38 min. **Pending:** nmap from outside, in Oracle's testing window, then a small evidence PR; form to be sent by 2 Nov 2026, earliest scan 9 Nov (see the M7 section) |
-| Guards | Destructive-command guards: helper guard, PreToolUse hook (see "Safety guards") | NEXT TASK, not built. The `~/.claude/settings.json` rules are live and proven |
+| M7a | Server foundation: free OCI VM from the repo, zero public ports, encrypted offsite backups, timed rebuild drill (`docs/tasks/m7-server.md`) | PR #7, merged by the owner with one line open. Rebuild drill about 38 min. **Pending:** nmap from outside, in Oracle's testing window, then a small evidence PR; form not sent by 2 Nov; sent on 3 Nov, the window is 10-19 Nov (see the M7 section) |
+| Guards | Destructive-command guards: helper guard, PreToolUse hook (see "Safety guards") | Built on branch `safety-guards` (PR open, not merged). Proofs in `docs/evidence.md` |
 | M7b, M7c | Stack and tunnel; demo experience (see the M7 section and the spec) | TODO, after M7a |
 
-**Next steps:** (1) the owner compares the home IP and sends Oracle's form by 2 Nov 2026; (2) the Safety guards task; (3) in Oracle's window, from 9 Nov: both scans, then the evidence PR; (4) from 8 and 15 Nov: the M7a memory and lifecycle follow-ups.
+**Next steps:** (1) Oracle's form was not sent by 2 Nov; the owner compares the home IP and sends it on the evening of 3 Nov, which makes the window 10-19 Nov (11-20 Nov if it goes out on 4 Nov); (2) the owner merges the Safety guards PR; (3) in Oracle's window: both scans, then the evidence PR; (4) from 8 and 15 Nov: the M7a memory and lifecycle follow-ups.
 
 ## M3: Stripe Processor
 
@@ -269,7 +269,7 @@ Acceptance criteria:
 7a. **Branch protection:** the owner turns it on for `main` when the repo goes public. `main` is unprotected today, and the repo is private.
 8. **Done means:** e2e summary shown, runbook section 8 and known limits updated, PLAN.md and CLAUDE.md updated, M6 marked done.
 
-## Safety guards (next task)
+## Safety guards
 
 **Why:** `scripts/wsl-sh.ps1` and `scripts/server-sh.ps1` send the script as base64, so a permission rule cannot see a `DROP` or `down -v` inside a file or a variable. The owner approved this design on 2026-11-01. These guards stop mistakes, not a determined attacker.
 
@@ -278,24 +278,24 @@ Acceptance criteria:
 - Ask, Bash and PowerShell: `*gh pr*merge*`, `*pulls/*/merge*`, `*clean-test-event*` (approved decision 1). All probed in `gh pr merge` (both shells), the API form and `clean-test-event.ps1` prompted, and the owner answered No.
 - Known bypass, shown: `d=docker; $d volume rm --help` was not denied; it only stopped because Git Bash has no `docker`.
 
-**To build, on its own branch and PR:**
-1. **Helper guard:** `scripts/lib/destructive-guard.ps1`, called by both helpers before encoding, on the final text (`-Script`, `-File`, piped). Refuses, ignoring case: `\bdrop\b`, `\btruncate\b`, `delete from`, `compose ... down` with `-v` or `--volumes`, `volume rm`, `remove` or `prune`, `dropdb`, `dropuser`, `pg_restore --clean`, `system prune --volumes`, `/var/lib/docker/volumes`. No override switch: the owner runs a truly destructive command by hand.
-2. **Hook:** `scripts/hooks/destructive-guard.mjs`, PreToolUse on PowerShell and Bash. It fires only when the command contains an executor (`wsl`, `docker`, `psql`, `ssh`, `bash`, `sh`, a helper), decodes literal base64 and scans a `-File` target. Exit 2 blocks. Node test file, proven able to fail.
-3. **One pattern list:** `scripts/lib/destructive-patterns.json`, read by both, so they cannot drift.
-4. **Decision 2, approved:** ask rules for `Edit` and `Write` on both helpers, `scripts/lib/destructive-*` and `scripts/hooks/**`. Add them last, or building the guards prompts on every file.
-5. **Decision 1, approved, already live:** direct `clean-test-event.ps1` calls prompt. e2e's nested call through `check-stale-timestamp.ps1` stays an exception: a rule cannot see it, and e2e needs it to remove its own test rows.
-6. **Public-IP check:** extend `scripts/check-docs.ps1` to fail on any public IPv4 address in tracked files, allowing private ranges and the reserved `192.0.2.x` test range. It replaces the hand grep (docs use `<public-ip>`). Prove it with a temp copy holding a public address; version strings like `8.39.0.1` may need an exception list.
+**Built 2026-11-03 (branch `safety-guards`), proofs in `docs/evidence.md` section "Safety guards":**
+1. **One pattern list:** `scripts/lib/destructive-patterns.json`, 10 patterns (DROP, TRUNCATE, DELETE FROM, compose `down -v`/`--volumes`, `volume rm|remove|prune`, `dropdb`, `dropuser`, `pg_restore --clean`, `system prune --volumes`, `/var/lib/docker/volumes`), each with a harmless `echo` sample that the tests use, so no pattern goes untested.
+2. **Helper guard:** `scripts/lib/destructive-guard.ps1`, dot-sourced by both helpers on the final text before encoding (`-Script`, `-File`, piped, stdin). Refusal = exit 3, nothing sent; an unreadable pattern file also refuses. No override switch. Test: `scripts/check-destructive-guard.ps1 [-Target wsl|server|both] [-ProveFailure]`.
+3. **Hook:** `scripts/hooks/destructive-guard.mjs`, registered next to `wsl-quoting-guard` in `.claude/settings.json`. Acts only when an executor is a segment's command word (also after `sudo`, and a variable as the command word, which closes the 2026-11-01 bypass); scans the command, literal base64 and the helpers' `-File` targets, never `powershell -File <script>`. Test: `scripts/hooks/destructive-guard.test.mjs`, proven able to fail with stubs. Both tests run in e2e.
+4. **Decision 1, approved, already live:** direct `clean-test-event.ps1` calls prompt. e2e's nested call through `check-stale-timestamp.ps1` stays an exception: a rule cannot see it, and e2e needs it to remove its own test rows. The hook lets the direct call through to that ask rule.
+5. **Decision 2, approved:** ask rules for `Edit` and `Write` on both helpers, `scripts/lib/destructive-*` and `scripts/hooks/**` in `~/.claude/settings.json`, added last.
+6. **Public-IP check:** `scripts/check-docs.ps1` fails on any public IPv4 address in tracked files (private, loopback, link-local, Tailscale and documentation ranges allowed; hits print masked). Its first run found one version-string example in this file, since reworded; `-AllowedIps` is empty.
 
-**Proofs, with commands harmless even if a guard fails:** both helpers get files containing `echo "DROP TABLE x"` and so on per pattern: each refused with no output, a control `echo ok` passes, for `-Script`, `-File` and piped. The hook gets `echo` versions and a base64 blob. Regression: `check-server-base`, `check-prod-stack`, `check-backup-health`. `CLAUDE.md` is at its 100-line limit: fold the note into the `wsl-sh` line.
+**Follow-up (small):** e2e prints the ~60 expected refusal lines of `check-destructive-guard.ps1` on stderr (one as a PowerShell ErrorRecord), which buries real errors. Run the check as a child process with stderr discarded.
 
-**Still open after that:** text built at runtime, files one level down (`psql -f`), other routes (Docker socket, Python), MCP tools and n8n workflows. The M7b Postgres role is the hard boundary for the database.
+**Still open:** text built at runtime, files one level down (`psql -f`), other routes (Docker socket, Python), MCP tools and n8n workflows. The M7b Postgres role is the hard boundary for the database.
 
 ## M7: Public live demo
 
 Spec: `docs/tasks/m7-server.md`. Proofs: `docs/evidence.md` section "M7a server". Operations: `docs/runbook.md` section 11.
 
 ### M7a follow-ups
-- **Scans, the one open Definition of Done line:** the owner sends Oracle's form by 2 Nov 2026. In the window, run both scans in one session (control port, then full; runbook section 11), then open a small evidence PR that adds the output to `docs/evidence.md` and marks the line done.
+- **Scans, the one open Definition of Done line:** the owner sends Oracle's form on the evening of 3 Nov 2026 (window 10-19 Nov; the filled copy lives outside the repo, it holds the home IP). In the window, run both scans in one session (control port, then full; runbook section 11), then open a small evidence PR that adds the output to `docs/evidence.md` and marks the line done.
 - 7 days after the rebuild (from 2026-11-08): read Oracle's `MemoryUtilization` for the 4 GB VM, compare with `free -m`, record it. Idle was 24-26% by `free -m`, so a metric that ignores cache stays above 20% only narrowly.
 - Day 15 after the first backup (from 2026-11-15): check the bucket's lifecycle rule really deleted the oldest object. Keep the first object until then, it is the test.
 - Move backups to R2 before real data: a closed Oracle account loses the backups too.
@@ -310,6 +310,10 @@ Spec: `docs/tasks/m7-server.md`. Proofs: `docs/evidence.md` section "M7a server"
 - Re-run the drill to "e2e green": that number goes in the README, not M7a's 38 minutes.
 - The drill's new VM has a new public IP that Oracle's form does not list. A scan of it needs a new form, and if 2026's test is used up, it waits for 2027. Until then the proof is the Security List.
 - Re-measure memory with workflows, `cloudflared` and real PDF renders: all `mem_limit` values add up to 2,688 MB today on a 4 GB VM.
+
+### M7c requirement found in the Safety guards task (owner decision, 2026-11-03)
+- The nightly demo reset runs real `DELETE FROM` statements. It runs on the server as a systemd service and timer (like `backup-offsite.timer`), never through `wsl-sh.ps1` or `server-sh.ps1`: the guards refuse those statements there, by design, and must not get an exception for it.
+- It connects with its own narrow Postgres role: `DELETE` on the four pipeline tables (`event_replays`, `side_effects`, `invoices`, `stripe_events`) and `SELECT` for its guards only. No DDL, no `TRUNCATE`, no access to other tables. A role, because a text guard can be bypassed and the database cannot.
 
 ### Before M7a
 

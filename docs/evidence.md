@@ -432,6 +432,33 @@ check-offsite-restore exit: 0
 - **Port 22 on the first VM** was open from 12:16 (11:16 UTC) until between 13:02 and 13:05 (12:02-12:05 UTC) on 2026-10-31. SSH log: 5 logins, all by key, 3 over Tailscale and 2 from the laptop's tests, no password attempt, 1 outside probe with an empty username. The log starts at 12:29, so 12:16-12:29 is not covered. The rebuilt VM never had the rule.
 - **`rpcbind`** came with the image and listened on all addresses. Nothing uses NFS, so cloud-init turns it off. The stack check only looked at TCP until then.
 - **The check itself was wrong once:** OCPU and memory compared `1.0` with `1` as text, so they failed on a correct VM. They compare numbers now.
+- **Nightly backup on the rebuilt VM** (read 2026-11-03, `journalctl -u backup-offsite`): both nights uploaded and pinged. Healthchecks.io's side was not looked at here.
+
+```
+2026-11-02T03:00:31+01:00 m7-server bash[92288]: uploaded automation-20261102T020030Z.dump.age (11593 bytes)
+2026-11-02T03:00:31+01:00 m7-server bash[92288]: [PASS] backup finished, heartbeat pinged
+2026-11-03T03:10:31+01:00 m7-server bash[220315]: uploaded automation-20261103T021030Z.dump.age (11593 bytes)
+2026-11-03T03:10:31+01:00 m7-server bash[220315]: [PASS] backup finished, heartbeat pinged
+```
+
+## Safety guards
+
+Recorded 2026-11-03. One pattern list, `scripts/lib/destructive-patterns.json` (10 patterns, each with a harmless `echo` sample), read by the helper guard (`scripts/lib/destructive-guard.ps1`, in `wsl-sh.ps1` and `server-sh.ps1`) and the PreToolUse hook (`scripts/hooks/destructive-guard.mjs`).
+
+| Check | Run | Result |
+|---|---|---|
+| `node scripts/hooks/destructive-guard.test.mjs` | Real hook | `41/41 cases behaved`: every pattern blocked through `wsl bash -c` and through `wsl-sh.ps1 -Script`, plus direct docker, uppercase, after `&&`, `sudo`, `$( )`, a variable as the command word (`d=docker; $d volume rm`, the bypass shown on 2026-11-01), a script held in a variable, literal base64, a helper `-File` target. Allowed: a commit message or grep mentioning the words, `clean-test-event.ps1`, `docker ps`, harmless helper calls, e2e |
+| same | Stub that allows everything / blocks everything | `11/41`, exit 1 / `30/41`, exit 1 |
+| `check-destructive-guard.ps1 -Target both` | Both helpers | 55 PASS: 10 patterns x (`wsl-sh` -Script, -File, piped; `server-sh` -Script, -File), each exit 3 with 0 output lines, and the `echo ok` control passes every route |
+| same, `-ProveFailure` | Control expected refused | 3 `[FAIL] ... passes the control 'echo ok'`, exit 1 |
+| Hook, live in the session | `wsl -d Ubuntu echo "drop table x"`; `wsl ... "echo <base64 only> \| base64 -d \| bash"` | Both blocked (`sql-drop`, `sql-delete-from`); `& scripts\wsl-sh.ps1 -Script 'echo ok'` ran |
+| Helper, direct | `wsl-sh.ps1 -Script "echo start<newline>echo 'TRUNCATE x'"` | `destructive-guard refused: sql-truncate ...`, exit 3, and `start` was not printed: nothing was sent |
+| Review finding: wrappers | Before the fix: `powershell -Command "... drop table x"`, `cmd /c "... TRUNCATE x"`, `powershell -File scripts\wsl-sh.ps1 -File <file with DROP>` | All three allowed (exit 0), `42/45`, exit 1. After treating `powershell`, `pwsh`, `cmd`, `iex` as wrappers: `45/45`; stubs `12/45` and `33/45`, exit 1 |
+| Fail closed | Hook copy and `wsl-sh.ps1` copy without `destructive-patterns.json` | Hook: `docker ps` blocked, exit 2. Helper: `echo ok` refused, exit 3, 0 output lines |
+| `check-docs.ps1` public-IP check | `-ExtraFile` holding a non-documentation public address; then `192.0.2.5` and `1.2.3.999` | `[FAIL] public IPv4 203.x.x.x in ...:1`, exit 1; then PASS. On its first run it found the one real hit, a version-string example in PLAN.md, since reworded |
+| Regression | `check-server-base`, `check-prod-stack` through the guarded `server-sh.ps1` | 16/16 and 13/13 PASS |
+
+Not covered, by design: text built at runtime, files one level down (`psql -f`), `Get-Content x \| powershell -File wsl-sh.ps1` in the hook (the helper still refuses it), the Docker socket, Python, MCP tools and n8n Postgres nodes. The hard boundary for the database is the M7b role without DDL rights.
 
 ## Not proven
 
@@ -439,7 +466,6 @@ check-offsite-restore exit: 0
 - A rebuilt VM gets a new public IP that the form does not list, so a scan of the M7b drill's VM needs a new form and possibly the next calendar year.
 - How Oracle's `MemoryUtilization` treats page cache, and the reading after 7 days on the 4 GB VM.
 - That the bucket's lifecycle rule really deletes after 14 days: only the rule's existence was seen, by the owner.
-- A nightly timer run on the rebuilt VM. The first VM's run at 03:01 was reported green by the owner: Healthchecks green, 2 objects in the bucket.
 - Checks never seen failing: "upload URL cannot read or list" (it would need a URL with read rights), `sshd: password login off` (the image already had it off) and the simple value lines of `check-server-base.ps1` (cloud-init, Docker, Tailscale, swap, timezone, log limits, unattended-upgrades). `sshd: root login off` was added after hardening; the first VM showed `without-password` before it.
 - Telegram 429/5xx backoff against a real error. The retry code is in `Stripe Send Telegram` and Send Alert, but no real 429 or 5xx was ever provoked. The retry loop's mechanics were proven with a stub; a failing `sendDocument` call and a real Stripe 429/5xx on the invoice lookup were not provoked either.
 - Several PDFs rendered at the same moment (memory gate), and Gotenberg under the memory cap with a much longer invoice.

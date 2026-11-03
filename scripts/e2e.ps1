@@ -125,7 +125,13 @@ Write-Step 'all 7 .sdk.ts files match their live workflows' ($LASTEXITCODE -eq 0
 
 # Doc rot: CLAUDE.md within its line limit, every relative link and image in README and docs resolves (known-missing images warn).
 & "$PSScriptRoot\check-docs.ps1"
-Write-Step 'docs: CLAUDE.md within its line limit, no broken relative links' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
+Write-Step 'docs: CLAUDE.md within its line limit, no broken relative links, no public IP' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
+
+# Safety guards: the hook blocks destructive text sent to an executor, and wsl-sh.ps1 refuses it before sending (samples only echo).
+$null = & node "$PSScriptRoot\hooks\destructive-guard.test.mjs"
+Write-Step 'destructive-guard hook: every pattern blocked, controls allowed' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
+$null = & "$PSScriptRoot\check-destructive-guard.ps1" -Target wsl 2>$null
+Write-Step 'wsl-sh.ps1 refuses every destructive pattern (-Script, -File, piped)' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
 
 # M5: the newest Postgres dump must exist, be non-empty and be younger than 25 h (the backup container dumps at start and every 24 h).
 try {

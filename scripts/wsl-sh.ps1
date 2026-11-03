@@ -28,6 +28,9 @@ end {
     elseif ($piped.Count -gt 0) { $text = $piped -join "`n" }
     elseif ([Console]::IsInputRedirected) { $text = [Console]::In.ReadToEnd() }
     if (-not $text -or -not $text.Trim()) { throw 'no script given: use -Script, -File, pipeline input or stdin' }
+    # Destructive text (DROP, down -v, ...) is refused here, on the final text, before it becomes base64 that nothing else can read.
+    . "$PSScriptRoot\lib\destructive-guard.ps1"
+    Assert-NotDestructive $text
     $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($text -replace "`r", '')))
     if ($b64.Length -gt 24000) { throw 'script too large for one wsl call (24000 base64 chars); split it' }
     wsl -d Ubuntu bash -c "echo $b64 | base64 -d | bash"
