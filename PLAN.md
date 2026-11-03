@@ -16,7 +16,7 @@ Pipeline: Stripe -> Intake -> `stripe_events` -> Processor -> Mailpit + Telegram
 | Guards | Destructive-command guards: helper guard, PreToolUse hook (see "Safety guards") | Built on branch `safety-guards` (PR open, not merged). Proofs in `docs/evidence.md` |
 | M7b, M7c | Stack and tunnel; demo experience (see the M7 section and the spec) | TODO, after M7a |
 
-**Next steps:** (1) Oracle's form was not sent by 2 Nov; the owner compares the home IP and sends it on the evening of 3 Nov, which makes the window 10-19 Nov (11-20 Nov if it goes out on 4 Nov); (2) the owner merges the Safety guards PR; (3) in Oracle's window: both scans, then the evidence PR; (4) from 8 and 15 Nov: the M7a memory and lifecycle follow-ups.
+**Next steps:** (0) first item next session: run `scripts/e2e.ps1` once with `DESTRUCTIVE_GUARD_HOOK` pointed at an allow-all stub (`process.exit(0)`) and confirm the step "destructive-guard hook: every pattern blocked, controls allowed" shows FAIL (automation-review MEDIUM 1 on PR #9: the e2e wiring of the two guard steps was never seen failing); record the output in `docs/evidence.md`; (1) Oracle's form was not sent by 2 Nov; the owner compares the home IP and sends it on the evening of 3 Nov, which makes the window 10-19 Nov (11-20 Nov if it goes out on 4 Nov); (2) the owner merges the Safety guards PR; (3) in Oracle's window: both scans, then the evidence PR; (4) from 8 and 15 Nov: the M7a memory and lifecycle follow-ups.
 
 ## M3: Stripe Processor
 
