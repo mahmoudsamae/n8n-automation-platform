@@ -23,7 +23,7 @@ Intake only verifies, classifies and stores (fast). All slow work belongs to the
   `INVOICE_EMAIL_FROM` (sender of the invoice email, e.g. `Musterwerk <rechnung@musterwerk.example>`; if unset the send fails),
   `TELEGRAM_SEND_PDF` (exactly `true` or `false`, NO default: it decides whether the invoice PDF, which holds customer data, is sent to Telegram, a third party; unset or any other value fails every event with a clear `last_error`),
   `NODE_FUNCTION_ALLOW_BUILTIN`, `N8N_BLOCK_ENV_ACCESS_IN_NODE`, `GENERIC_TIMEZONE`, `TZ`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`.
-- M7 server (`ubuntu@m7-server`, Tailscale only, `docker-compose.prod.yml`, `infra/`): `docs/runbook.md` section 11. The owner approves any iptables, sshd or file-delete command there; nmap only inside Oracle's filed window; write `<public-ip>`, never the address.
+- M7 server (`ubuntu@m7-server`, Tailscale only, `docker-compose.prod.yml`, `infra/`): `docs/runbook.md` section 11. The owner approves any iptables, sshd or file-delete command there; nmap only inside Oracle's filed window; write `<public-ip>`, never the address. SSH only with Windows OpenSSH (`scripts\server-sh.ps1`; Git Bash's `ssh` is refused); its `.env` is `~/n8n-workflows/.env`.
 - n8n credentials: `Postgres automation` (`XVNN7sIThniqsuOf`, DB and user `automation`), `Mailpit SMTP` (`nxXABuEVvevioUzb`, host `mailpit`:1025, no history across restarts), `Telegram alerts` (`kNsPsjXulOh7i4RQ`; chat id = `$env.TELEGRAM_CHAT_ID`),
   `Stripe read-only` (`qtmzPq7nRsOF9MAW`, restricted test-mode key: Checkout Sessions, PaymentIntents, Charges read; only the Processor's one lookup per invoice; never print it).
 - `STRIPE_WEBHOOK_SECRET` must equal the `whsec_...` that `stripe listen` prints (on STDERR), or every event gets 400.
@@ -95,6 +95,6 @@ Applied by the user (002-006; the user runs migrations, Claude never does, and c
 - Any table holding financial or legal records uses `ON DELETE RESTRICT`, never CASCADE.
 - Task specs live in `docs/tasks/` (long pasted prompts get truncated). Point to the file instead of pasting.
 - Every change to a live workflow must be exported to its `.sdk.ts` file in the same session, then diffed.
-- Never print or log secrets (signing secrets, tokens, DB passwords, the heartbeat URL). Redact `whsec_` before showing any output.
+- Never print or log secrets (signing secrets, tokens, DB passwords, the heartbeat URL). Redact `whsec_` before showing any output. The repo is PUBLIC since 2026-11-05: every commit, PR body and comment is published at once. `main` is protected (PR only); new commits use the GitHub noreply email (local `user.email`).
 - Before declaring any workflow change done, run `scripts/e2e.ps1` and show the summary.
 - Stripe stays in sandbox permanently (portfolio project). Nothing goes live; the live-mode checklist is documentation for a hypothetical client.

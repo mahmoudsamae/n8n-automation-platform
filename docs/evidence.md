@@ -355,7 +355,30 @@ One bug in the docs check was found by running it: its relative path display use
 
 First VM, 1 OCPU, 6 GB, idle M7a stack with no workflows, `free -m` on 2026-11-01: 1,059 MB used of 5,901 MB (about 18%), 4,401 MB cache. That is under Oracle's 20% reclamation line if its metric ignores cache, so the rebuilt VM uses 1 OCPU, 4 GB.
 
-Rebuilt VM, 1 OCPU, 4 GB, same stack: 1,016 MB used of 3,895 MB (about 26%) after the restore, and 928 MB (about 24%) after the reboot. Oracle reclaims only if CPU and network are under 20% as well. Oracle's own metric was not compared yet (see "Not proven").
+Rebuilt VM, 1 OCPU, 4 GB, same stack: 1,016 MB used of 3,895 MB (about 26%) after the restore, and 928 MB (about 24%) after the reboot. Oracle reclaims only if CPU and network are under 20% as well.
+
+### After 7 days
+
+Read 2026-11-08, 7 days 2 hours after the rebuild, against Oracle's idle-reclamation rule (CPU P95, network and memory all under 20% for 7 days). Server snapshot at 12:25:52 (11:25:52 UTC):
+
+```
+Mem:  total 3895  used 1038  free 834  buff/cache 2236  available 2857
+used without cache (MemTotal - MemAvailable): 26.7%   with cache (MemTotal - MemFree): 78.6%
+n8n 503.3MiB   postgres 56.17MiB   gotenberg 47.89MiB   mailpit 28.57MiB   (CPU each under 0.3%)
+load average 0.05, 0.09, 0.09 on 1 core
+enp0s6 since boot: 487.7 MB received, 681.2 MB sent
+```
+
+OCI console, namespace `oci_computeagent`, 1-8 Nov, statistic P95 (read by the owner):
+
+| Metric | Oracle | Under 20%? |
+|---|---|---|
+| `MemoryUtilization` | flat at about 25-26% all week | **No** |
+| `CpuUtilization` | 2-4.5% | Yes |
+| Network bytes in / out | cumulative, about 500 MB / 700 MB by 8 Nov (same as `enp0s6`); about 1.1 KB/s on average, roughly 0.001% of A1's 1 Gbit/s | Yes |
+| Memory allocation stalls | 0 all week | - |
+
+**Oracle's `MemoryUtilization` does not count page cache:** it matches the 26.7% without cache, not the 78.6% with it. So memory keeps the 4 GB VM above the line on its own, by about 6 points. n8n grew from 382 MiB on day 0 to 503 MiB. If the stack ever shrinks under about 800 MB used, the VM falls below 20% on all three; the rebuild drill is the answer then (no artificial load).
 
 ```
 NAME        MEM USAGE / LIMIT   CPU %
@@ -441,6 +464,19 @@ check-offsite-restore exit: 0
 2026-11-03T03:10:31+01:00 m7-server bash[220315]: [PASS] backup finished, heartbeat pinged
 ```
 
+- **Nightly backup, first 7 nights** (read 2026-11-08): the journal shows one `uploaded` and one `[PASS] ... heartbeat pinged` line for every night from 2 to 8 Nov, each object 11,593 bytes, between 03:00 and 03:13 (02:00-02:13 UTC; the timer is Persistent with a random delay). The OCI console lists the same 7 object names in `m7-backups`, plus the 31 Oct and 1 Nov objects from the first VM (9 in all, about 102 KiB). Healthchecks.io `m7-server-backup`: up, one OK ping for each of those nights, and status "All good" for October and November. One pause on 7 Nov 23:24 (22:24 UTC), which the next ping set back to up. The 31 Oct object is the lifecycle test (from 15 Nov).
+
+```
+Nov 02 03:00:31 uploaded automation-20261102T020030Z.dump.age (11593 bytes)
+Nov 03 03:10:31 uploaded automation-20261103T021030Z.dump.age (11593 bytes)
+Nov 04 03:07:17 uploaded automation-20261104T020717Z.dump.age (11593 bytes)
+Nov 05 03:12:41 uploaded automation-20261105T021241Z.dump.age (11593 bytes)
+Nov 06 03:12:17 uploaded automation-20261106T021217Z.dump.age (11593 bytes)
+Nov 07 03:06:59 uploaded automation-20261107T020659Z.dump.age (11593 bytes)
+Nov 08 03:13:11 uploaded automation-20261108T021310Z.dump.age (11593 bytes)
+(each followed by: [PASS] backup finished, heartbeat pinged)
+```
+
 ## Safety guards
 
 Recorded 2026-11-03. One pattern list, `scripts/lib/destructive-patterns.json` (10 patterns, each with a harmless `echo` sample), read by the helper guard (`scripts/lib/destructive-guard.ps1`, in `wsl-sh.ps1` and `server-sh.ps1`) and the PreToolUse hook (`scripts/hooks/destructive-guard.mjs`).
@@ -468,7 +504,6 @@ Not covered, by design: text built at runtime, files one level down (`psql -f`),
 
 - **Zero open ports by nmap from outside: pending Oracle's testing window.** Oracle requires a filed form, 5 business days' notice, and one test per service per calendar year. Until then the proof is indirect: the Security List has no TCP or UDP ingress rule, iptables ends in `REJECT`, and public SSH does not answer. UDP stays unproven by nmap either way (it reports `open|filtered`).
 - A rebuilt VM gets a new public IP that the form does not list, so a scan of the M7b drill's VM needs a new form and possibly the next calendar year.
-- How Oracle's `MemoryUtilization` treats page cache, and the reading after 7 days on the 4 GB VM.
 - That the bucket's lifecycle rule really deletes after 14 days: only the rule's existence was seen, by the owner.
 - Checks never seen failing: "upload URL cannot read or list" (it would need a URL with read rights), `sshd: password login off` (the image already had it off) and the simple value lines of `check-server-base.ps1` (cloud-init, Docker, Tailscale, swap, timezone, log limits, unattended-upgrades). `sshd: root login off` was added after hardening; the first VM showed `without-password` before it.
 - Telegram 429/5xx backoff against a real error. The retry code is in `Stripe Send Telegram` and Send Alert, but no real 429 or 5xx was ever provoked. The retry loop's mechanics were proven with a stub; a failing `sendDocument` call and a real Stripe 429/5xx on the invoice lookup were not provoked either.
