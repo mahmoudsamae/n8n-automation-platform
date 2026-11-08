@@ -207,6 +207,7 @@ The M7 server: OCI Always Free, `VM.Standard.A1.Flex`, 1 OCPU, 4 GB, Ubuntu 24.0
 powershell -File scripts\check-server-base.ps1                              # VM matches cloud-init, 4 GB, port 22 only on tailscale0, password login off
 powershell -File scripts\check-prod-stack.ps1                               # stack up, no published ports, nothing on public addresses, memory
 powershell -File scripts\check-public-ports.ps1 -Mode Tailnet -Ip <public-ip>   # Tailscale SSH works, public SSH does not answer (no nmap)
+powershell -File scripts\check-imds-blocked.ps1                             # containers cannot reach the metadata service; DNS, HTTPS and the host still work
 ```
 
 **Backups.** `backup-offsite.timer` runs nightly at 03:00 (Persistent): `pg_dump -Fc` piped into `age`, uploaded with a write-only pre-authenticated URL to the bucket `m7-backups`, then a ping to the Healthchecks check `m7-server-backup` (period 1 day, grace 6 h). Any failure means no ping. Keeps 14 days (bucket lifecycle rule). Postgres only: `n8n_data` is not backed up yet (M7b). Run one by hand: `bash ~/n8n-workflows/infra/backup-offsite.sh`. Logs: `journalctl -u backup-offsite`.
@@ -226,6 +227,7 @@ The private key is only on the laptop (`~/.config/age/m7-backup.key` in WSL) and
 9. Only after green: terminate the old VM, tick **Permanently delete the attached boot volume** (the free limit counts it), remove its deploy key. Update the testing form's IP with Oracle before any further scan.
 
 **Firewall.** Security List: no TCP or UDP ingress, ICMP stays (path-MTU). Host: `/etc/iptables/rules.v4`, no UFW (Oracle: it "might cause an instance not to boot"), never `iptables-restore` (it flushes Docker's and Tailscale's chains), never touch the 169.254 rules. Port 22 is never reopened for a test.
+Containers are kept away from the metadata service (`169.254.169.254`, where user-data is readable) by `docker-imds-block.service` (`infra/imds-block.sh`): its own chain `M7-IMDS`, hooked first into `DOCKER-USER`, allows DNS (53) to that address (OCI's resolver) and rejects everything else to `169.254.0.0/16`. The host is not affected. It runs after Docker and again on every Docker restart; `bootstrap.sh` installs it. If `check-imds-blocked.ps1` fails: `sudo systemctl restart docker-imds-block`.
 
 **Oracle's scan rules.** nmap against the public IP only inside the window on the filed Oracle Cloud Security Testing Request Form (`security_test_notification_grp@oracle.com`): from 5 business days after submission, at most 10 consecutive days, once per service per calendar year, non-aggressive, only the form's target and source IPs. `check-public-ports.ps1 -Mode Public` refuses anything else. If the VM or the home IP changes first, tell Oracle before testing.
 

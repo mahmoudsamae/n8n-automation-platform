@@ -24,7 +24,7 @@ git pull --ff-only
 
 # Only touch systemd when a unit file really changed.
 changed=0
-for unit in backup-offsite.service backup-offsite.timer; do
+for unit in backup-offsite.service backup-offsite.timer docker-imds-block.service; do
   if ! cmp -s "infra/$unit" "/etc/systemd/system/$unit"; then
     sudo install -m 0644 "infra/$unit" "/etc/systemd/system/$unit"
     changed=1
@@ -33,6 +33,10 @@ done
 if [ "$changed" = 1 ]; then sudo systemctl daemon-reload; fi
 sudo systemctl enable --now backup-offsite.timer >/dev/null 2>&1
 systemctl is-active --quiet backup-offsite.timer || fail "backup-offsite.timer is not active"
+# Containers must not reach the metadata service (user-data is readable there). restart, not start: it re-applies the rules every run.
+sudo systemctl enable docker-imds-block.service >/dev/null 2>&1
+sudo systemctl restart docker-imds-block.service
+sudo iptables -w -C DOCKER-USER -j M7-IMDS 2>/dev/null || fail "M7-IMDS is not hooked into DOCKER-USER"
 
 ready=0
 for _ in $(seq 1 30); do
