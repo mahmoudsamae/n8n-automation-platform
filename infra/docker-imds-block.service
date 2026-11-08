@@ -1,0 +1,14 @@
+[Unit]
+Description=Block containers from the instance metadata service (infra/imds-block.sh)
+After=docker.service
+Requires=docker.service
+# A Docker restart re-creates its chains; PartOf restarts this unit with it, so the hook is put back.
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash /home/ubuntu/n8n-workflows/infra/imds-block.sh
+
+[Install]
+WantedBy=multi-user.target docker.service
