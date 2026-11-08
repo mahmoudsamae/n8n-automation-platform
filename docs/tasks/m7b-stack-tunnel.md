@@ -1,6 +1,6 @@
 # M7b: stack and tunnel (spec)
 
-Status: plan approved by the owner on 2026-11-08. Built PR by PR; each PR updates this file's status line. M7b-1 built and proven 2026-11-08 (PR open). Design background: `docs/tasks/m7-server.md`.
+Status: plan approved by the owner on 2026-11-08. Built PR by PR; each PR updates this file's status line. M7b-1 merged (PR #16). M7b-2 built and proven 2026-11-08 (PR open). Design background: `docs/tasks/m7-server.md`.
 
 ## Goal
 
@@ -34,10 +34,10 @@ Every new check is seen failing once and then passing, and the runner's summary 
 - Fail once: unhook the chain. The check FAILs; `systemctl restart docker-imds-block` makes it PASS. The rule must also survive a Docker restart and a VM reboot.
 - Known window: on boot, containers with a restart policy start with Docker, a few seconds before this unit runs.
 
-### M7b-2: Postgres role `n8n_app`
+### M7b-2: Postgres role `n8n_app` (built, proofs in `docs/evidence.md`)
 - `migrations/007_n8n_app_role.sql`, run by the owner:
   - LOGIN, no superuser, no createdb, no createrole, no password in the file.
-  - `SELECT, INSERT, UPDATE` on the four pipeline tables; `USAGE, SELECT` on their sequences. No DELETE, no TRUNCATE.
+  - As built, from the workflows' SQL: `stripe_events` SELECT/INSERT/UPDATE, `side_effects` and `invoices` SELECT/INSERT, USAGE on the two column-default sequences, nothing on `event_replays`. No DELETE, no TRUNCATE.
   - `automation` keeps ownership, so `n8n_app` cannot ALTER or DROP anything.
 - `scripts/check-db-role.ps1`: catalog checks plus a TCP login test.
 - Fail once: the owner grants TRUNCATE on one table and the check FAILs; revoke, then PASS. The owner also attempts the negative DDL by hand as `n8n_app`, which must show `permission denied`.

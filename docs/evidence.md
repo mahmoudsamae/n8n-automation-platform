@@ -523,6 +523,44 @@ The controls passed in every run: the host still reaches the metadata service (O
 
 **Known window:** at boot, containers with a restart policy start together with Docker, about one second before this unit runs (13:25:08 and 13:25:09 above). Accepted: nothing in the stack reads the metadata service.
 
+### Database role without DDL rights
+
+Migration `007_n8n_app_role.sql`, run by the owner on the server; the owner set the password with `\password` (Bitwarden "M7 server n8n_app DB password", server `.env` `N8N_DB_PASSWORD`).
+- **Privileges** come from the SQL in the `.sdk.ts` files, which e2e's drift check ties to the live workflows. The only writes to `invoices` and `side_effects` are `INSERT ... ON CONFLICT DO NOTHING`, with the invoice document fields written in that INSERT. The renderer only reads. Every UPDATE targets `stripe_events`. Every Postgres node uses `executeQuery`, so no table-mode upsert exists. So: `stripe_events` SELECT/INSERT/UPDATE, `side_effects` and `invoices` SELECT/INSERT, USAGE on the two column-default sequences, nothing on `event_replays`.
+- **Guard finding:** the first version of `check-db-role.ps1` listed privilege names in its SQL, and `server-sh.ps1` refused it (`sql-truncate`, exit 3, nothing sent). The check now reads the ACLs with `aclexplode` and never names a privilege. The guard keeps no exception.
+
+`scripts/check-db-role.ps1` (times Berlin, UTC+1):
+
+| Time | State | Result |
+|---|---|---|
+| before | no role yet | 13 FAIL, exit 1 (only "wrong password refused" passes, which is also true without the role) |
+| 22:07:21 (21:07:21 UTC) | migration and password applied | 14/14 PASS, `0 failed`, exit 0 |
+| 22:08:57 (21:08:57 UTC) | **fail test:** owner granted one extra privilege on `stripe_events` | **FAIL** `extra: stripe_events:TRUNCATE`, `1 failed`, exit 1 |
+| 22:10:14 (21:10:14 UTC) | owner revoked it | 14/14 PASS, exit 0 |
+
+The 14 checks:
+- the role has no superuser, createdb, createrole, replication or bypassrls attribute, is a member of no role and owns nothing
+- the table and sequence privileges (n8n_app and PUBLIC) equal the expected set exactly
+- no CREATE on the schema, no CREATE or TEMPORARY on the database, no PUBLIC grant on it
+- the role logs in over TCP from another container with the `.env` password, and a wrong password is refused
+
+`pg_dump` as `automation` still works (12,892 bytes).
+
+**Owner's hand test**, logged in as `n8n_app` over TCP from a throwaway container, each statement inside `BEGIN; ...; ROLLBACK;` (screenshot read by Claude). The first paste was garbled after the DROP, inside the already-aborted transaction that ended in ROLLBACK; each statement was then run on its own line:
+
+```
+DROP TABLE stripe_events                       ERROR:  must be owner of table stripe_events
+TRUNCATE stripe_events                         ERROR:  permission denied for table stripe_events
+ALTER TABLE stripe_events ADD COLUMN probe     ERROR:  must be owner of table stripe_events
+DELETE FROM stripe_events WHERE false          ERROR:  permission denied for table stripe_events
+CREATE TABLE probe (id int)                    ERROR:  permission denied for schema public
+UPDATE invoices SET currency = currency ...    ERROR:  permission denied for table invoices
+SELECT count(*) FROM event_replays             ERROR:  permission denied for table event_replays
+SELECT count(*) FROM stripe_events (control)   1
+```
+
+The control matches `automation`'s count (1 row, the M7a restore-drill row; no row-level security on any table). `scripts/lint-migrations.ps1` now also fails a migration from 008 on that creates a table without a GRANT to `n8n_app`. That was proven with scratch copies: a grant only in a comment FAILs, a real grant PASSes.
+
 ## Safety guards
 
 Recorded 2026-11-03. One pattern list, `scripts/lib/destructive-patterns.json` (10 patterns, each with a harmless `echo` sample), read by the helper guard (`scripts/lib/destructive-guard.ps1`, in `wsl-sh.ps1` and `server-sh.ps1`) and the PreToolUse hook (`scripts/hooks/destructive-guard.mjs`).
