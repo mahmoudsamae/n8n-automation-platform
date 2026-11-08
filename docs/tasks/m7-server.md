@@ -29,7 +29,7 @@ A recruiter opens one link, pays with a Stripe test card, and sees their own inv
 
 - Oracle may reclaim an Always Free VM when, over 7 days, CPU p95 < 20% **and** network < 20% **and** (A1 only) memory < 20%. All three must be true.
 - Measured on a first 6 GB VM with the idle M7a stack (no workflows): `free -m` used 1,059 MB of 5,901 MB, about 18%, plus 4,401 MB of cache. That is under 20% if Oracle's metric ignores cache. On **4 GB** the rebuilt VM measured 24-26%, so it stays above the line either way. The stack already runs in 2 GB on the laptop. So: shape `VM.Standard.A1.Flex`, **1 OCPU, 4 GB**. All `mem_limit` values add up to 2,688 MB, which fits. This leaves 1 OCPU and 8 GB of the free allowance.
-- **[VERIFY, needs the server]** how Oracle measures memory utilization (with or without page cache). Oracle's doc says only "Measured by pages... percentage of used pages". Enable the Oracle Cloud Agent monitoring plugin, compare `MemoryUtilization` with `free -m`, and record the metric after 7 days.
+- **Verified 2026-11-08:** Oracle's `MemoryUtilization` does NOT count page cache. Over the first 7 days on 4 GB its P95 sat flat at about 25-26%, matching `free -m` without cache (26.7%), not with it (78.6%). CPU P95 was 2-4.5% and network far below 20%, so memory alone keeps the VM above the reclamation line. Numbers in `docs/evidence.md` ("M7a server", "After 7 days").
 - No artificial CPU or network load. If reclamation still happens, the rebuild drill (below) is the answer, and Hetzner CX23 is the fallback.
 
 ### 3. Rebuild from the repository
