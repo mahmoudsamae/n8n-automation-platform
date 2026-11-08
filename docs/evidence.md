@@ -388,6 +388,23 @@ gotenberg   7.887MiB / 512MiB   0.01%
 mailpit     9.086MiB / 128MiB   0.00%
 ```
 
+### Backup ping rotation
+
+2026-11-08. A screenshot of the `m7-server-backup` check page showed its ping URL to a Claude session, so the URL was rotated the same way as M5 proof 7. No value was printed at any step.
+- Before: Claude stored the sha256 of the current `BACKUP_HEARTBEAT_URL` in a mode-600 file on the server.
+- Owner: renamed the old check `m7-server-backup-old`, created a new `m7-server-backup` (period 1 day, grace 6 h, email on), updated the Bitwarden item "M7 Healthchecks backup ping URL" and edited the server `.env` by hand.
+- Claude, yes/no only: `.env` mode 600, one `BACKUP_HEARTBEAT_URL` line, an `https://hc-ping.com/` URL with no spaces or quotes, and its hash **differs** from the old one. The hash file was then shredded.
+- One manual run at 13:12:09 (12:12:09 UTC):
+
+```
+uploaded automation-20261108T121209Z.dump.age (11593 bytes)
+[PASS] backup finished, heartbeat pinged
+exit 0
+```
+
+- The owner then deleted the old check (owner confirmed). Whether the new check shows that 13:12 ping is **waiting for the owner to confirm**.
+- The failure path needed no new test: a failed backup sends no ping (see "Checks, made to fail" below: Postgres stopped, and an unresolvable upload URL). The old URL cannot be tested once its check is deleted.
+
 ### Rebuild drill
 
 All times Berlin (CET, UTC+1), 2026-11-01. The old VM was stopped first, so the new one could not lean on it, and terminated only after green. **About 38 minutes** from Stop to "stack healthy, restored counts match", including the owner's console work. M7a has no workflows: M7b re-runs the drill to "e2e green", and that number goes in the README.
