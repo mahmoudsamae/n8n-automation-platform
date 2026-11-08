@@ -1,6 +1,6 @@
 # M7b: stack and tunnel (spec)
 
-Status: plan approved by the owner on 2026-11-08. Built PR by PR; each PR updates this file's status line. Design background: `docs/tasks/m7-server.md`.
+Status: plan approved by the owner on 2026-11-08. Built PR by PR; each PR updates this file's status line. M7b-1 built and proven 2026-11-08 (PR open). Design background: `docs/tasks/m7-server.md`.
 
 ## Goal
 
@@ -22,7 +22,7 @@ No rebuild drill before the Oracle scans are done (window 17-26 Nov 2026): a reb
 
 Every new check is seen failing once and then passing, and the runner's summary line is required, not only its exit code. No secret is printed. The public IP is written as `<public-ip>`.
 
-### M7b-1: metadata service blocked (this PR)
+### M7b-1: metadata service blocked (built, proofs in `docs/evidence.md`)
 - `infra/imds-block.sh`, run by `infra/docker-imds-block.service` after Docker:
   - Its own chain `M7-IMDS`, hooked first into `DOCKER-USER`: DNS (53) to `169.254.169.254` is allowed, everything else to `169.254.0.0/16` is rejected.
   - Idempotent; restarted with Docker (`PartOf`). It never touches `rules.v4` or the host's own 169.254 rules, and never runs `iptables-restore`.

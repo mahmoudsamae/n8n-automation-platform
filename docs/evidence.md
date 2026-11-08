@@ -494,6 +494,35 @@ Nov 08 03:13:11 uploaded automation-20261108T021310Z.dump.age (11593 bytes)
 (each followed by: [PASS] backup finished, heartbeat pinged)
 ```
 
+## M7b server
+
+Spec: `docs/tasks/m7b-stack-tunnel.md`. All times Berlin (CET, UTC+1), 2026-11-08. The owner approved each iptables command beforehand.
+
+### Metadata service blocked
+
+Before this change the n8n container could read the OCI metadata service. `scripts/check-imds-blocked.ps1` before the block: **5 FAIL, exit 1** (v2 with the Oracle header reachable from the n8n container, from a throwaway container on `m7_default` and from one on the default bridge; chain missing; unit not found). v1 already showed "blocked": the instance requires the authorization header, which turns the v1 endpoint off.
+
+Installed through `infra/bootstrap.sh`, which installs and restarts `docker-imds-block.service`. The resulting rules:
+
+```
+-A DOCKER-USER -j M7-IMDS
+-A M7-IMDS -d 169.254.169.254/32 -p udp -m udp --dport 53 -j RETURN
+-A M7-IMDS -d 169.254.169.254/32 -p tcp -m tcp --dport 53 -j RETURN
+-A M7-IMDS -d 169.254.0.0/16 -j REJECT --reject-with icmp-admin-prohibited
+```
+
+| Time | Step | Result |
+|---|---|---|
+| 13:22:21 (12:22:21 UTC) | after install | 10/10 PASS, `0 failed`, exit 0 |
+| 13:22:44 (12:22:44 UTC) | **fail test:** `iptables -D DOCKER-USER -j M7-IMDS` | **4 FAIL** (v2 reachable from all three containers, hook missing), `4 failed`, exit 1 |
+| 13:22:47 (12:22:47 UTC) | `systemctl restart docker-imds-block` | 10/10 PASS, exit 0 |
+| 13:23:09 (12:23:09 UTC) | `systemctl restart docker` | the unit restarted with Docker (both active since 13:23:17), 10/10 PASS |
+| 13:23:56 (12:23:56 UTC) | VM reboot (new `boot_id`, up 13:24:40) | Docker 13:25:08, unit 13:25:09, 10/10 PASS |
+
+The controls passed in every run: the host still reaches the metadata service (Oracle Cloud Agent), n8n and a container on `m7_default` resolve `api.telegram.org` (DNS to OCI's resolver at the same address stays open), and n8n reaches `https://api.telegram.org`. After the reboot `check-server-base.ps1` 16/16 and `check-prod-stack.ps1` 13/13 still pass.
+
+**Known window:** at boot, containers with a restart policy start together with Docker, about one second before this unit runs (13:25:08 and 13:25:09 above). Accepted: nothing in the stack reads the metadata service.
+
 ## Safety guards
 
 Recorded 2026-11-03. One pattern list, `scripts/lib/destructive-patterns.json` (10 patterns, each with a harmless `echo` sample), read by the helper guard (`scripts/lib/destructive-guard.ps1`, in `wsl-sh.ps1` and `server-sh.ps1`) and the PreToolUse hook (`scripts/hooks/destructive-guard.mjs`).
