@@ -402,7 +402,7 @@ uploaded automation-20261108T121209Z.dump.age (11593 bytes)
 exit 0
 ```
 
-- The owner then deleted the old check (owner confirmed). Whether the new check shows that 13:12 ping is **waiting for the owner to confirm**.
+- The owner confirmed the new check is green with its last ping at 13:12 (12:12 UTC), then deleted the old check.
 - The failure path needed no new test: a failed backup sends no ping (see "Checks, made to fail" below: Postgres stopped, and an unresolvable upload URL). The old URL cannot be tested once its check is deleted.
 
 ### Rebuild drill
