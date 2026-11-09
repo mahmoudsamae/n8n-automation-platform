@@ -16,17 +16,14 @@ services:
       - GENERIC_TIMEZONE=Europe/Berlin
       - TZ=Europe/Berlin
       - NODE_FUNCTION_ALLOW_BUILTIN=crypto
-      - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
-      # Without an explicit key n8n generates one inside its volume. :? makes a missing key fail instead of starting.
-      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:?set N8N_ENCRYPTION_KEY in .env}
-      # Filled in M7b, when the workflows arrive. Empty until then; nothing reads them yet.
-      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET:-}
-      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
-      - ALERT_EMAIL_TO=${ALERT_EMAIL_TO:-}
-      - ALERT_EMAIL_FROM=${ALERT_EMAIL_FROM:-}
-      - HEARTBEAT_URL=${HEARTBEAT_URL:-}
-      - INVOICE_EMAIL_FROM=${INVOICE_EMAIL_FROM:-}
-      - TELEGRAM_SEND_PDF=${TELEGRAM_SEND_PDF:-}
+      # Workflows cannot read the environment (M7b-3). Their config is in the n8n data tables stripe_config and stripe_heartbeat,
+      # the Stripe signing secret in the crypto credential "Stripe webhook secret". Nothing secret is passed to n8n as a variable.
+      - N8N_BLOCK_ENV_ACCESS_IN_NODE=true
+      # The key comes from a file, so it is in no process environment and not in docker inspect. infra/bootstrap.sh writes the file
+      # from .env (owner uid 1000, mode 400). Without an explicit key n8n would generate one inside its volume.
+      - N8N_ENCRYPTION_KEY_FILE=/run/secrets/n8n_encryption_key
+    secrets:
+      - n8n_encryption_key
     volumes:
       - n8n_data:/home/node/.n8n
     depends_on:
@@ -80,3 +77,8 @@ networks:
 volumes:
   n8n_data:
   pg_data:
+
+secrets:
+  n8n_encryption_key:
+    # Written by infra/bootstrap.sh from N8N_ENCRYPTION_KEY in .env. Never in git (secrets/ is ignored).
+    file: ./secrets/n8n_encryption_key

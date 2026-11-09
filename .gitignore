@@ -3,6 +3,8 @@
 .env.*
 *.pem
 *.key
+# server: n8n's encryption key file, written by infra/bootstrap.sh from .env
+secrets/
 
 # logs
 *.log

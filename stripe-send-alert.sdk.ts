@@ -14,6 +14,58 @@ const fromParent = trigger({
   output: [{ subject: 'Stripe pipeline: 1 event needs attention', body: 'details' }],
 });
 
+// Configuration: a second branch off the trigger, placed ABOVE Prepare Alert (y 300 < 400) so n8n runs it first. Workflows cannot
+// read the environment. A config problem does not stop the alert: a missing chat id fails only Telegram, missing addresses fail only
+// the email, so one channel still gets through; if both fail, Verdict names the config problem.
+const loadConfig = node({
+  type: 'n8n-nodes-base.dataTable',
+  version: 1.1,
+  config: {
+    name: 'Load Config',
+    parameters: {
+      resource: 'row',
+      operation: 'get',
+      dataTableId: { __rl: true, mode: 'name', value: 'stripe_config' },
+      returnAll: true,
+    },
+    alwaysOutputData: true,
+    executeOnce: true,
+    onError: 'continueRegularOutput',
+    position: [420, 300],
+  },
+  output: [{ id: 1, telegram_chat_id: '123', alert_email_to: 'ops@alerts.invalid', alert_email_from: 'n8n@alerts.invalid' }],
+});
+
+// Exactly one row, no defaults: anything else becomes config_problem.
+const configNode = node({
+  type: 'n8n-nodes-base.code',
+  version: 2,
+  config: {
+    name: 'Config',
+    parameters: {
+      mode: 'runOnceForAllItems',
+      language: 'javaScript',
+      jsCode: `const KEYS = ['telegram_chat_id', 'alert_email_to', 'alert_email_from'];
+const items = $input.all();
+const failure = items.find((i) => i.json && i.json.error);
+const rows = items.map((i) => i.json).filter((r) => r && r.id !== undefined && !r.error);
+const row = rows.length === 1 ? rows[0] : {};
+const out = {};
+for (const k of KEYS) out[k] = row[k] == null ? '' : String(row[k]).trim();
+let config_problem = '';
+if (failure) config_problem = 'data table stripe_config could not be read: ' + String(failure.json.error.message || failure.json.error).slice(0, 150);
+else if (rows.length !== 1) config_problem = 'data table stripe_config must have exactly one row, found ' + rows.length;
+else {
+  const empty = KEYS.filter((k) => !out[k]);
+  if (empty.length) config_problem = 'data table stripe_config: ' + empty.join(', ') + ' is empty';
+}
+return [{ json: { ...out, config_problem } }];`,
+    },
+    position: [640, 300],
+  },
+  output: [{ telegram_chat_id: '123', alert_email_to: 'ops@alerts.invalid', alert_email_from: 'n8n@alerts.invalid', config_problem: '' }],
+});
+
 const prepareAlert = node({
   type: 'n8n-nodes-base.code',
   version: 2,
@@ -51,7 +103,7 @@ const sendTelegram1 = node({
     parameters: {
       resource: 'message',
       operation: 'sendMessage',
-      chatId: expr('{{ $env.TELEGRAM_CHAT_ID }}'),
+      chatId: expr("{{ $('Config').first().json.telegram_chat_id }}"),
       text: alertText,
       additionalFields: { appendAttribution: false, parse_mode: 'HTML' },
     },
@@ -102,7 +154,7 @@ const sendTelegram2 = node({
     parameters: {
       resource: 'message',
       operation: 'sendMessage',
-      chatId: expr('{{ $env.TELEGRAM_CHAT_ID }}'),
+      chatId: expr("{{ $('Config').first().json.telegram_chat_id }}"),
       text: alertText,
       additionalFields: { appendAttribution: false, parse_mode: 'HTML' },
     },
@@ -153,7 +205,7 @@ const sendTelegram3 = node({
     parameters: {
       resource: 'message',
       operation: 'sendMessage',
-      chatId: expr('{{ $env.TELEGRAM_CHAT_ID }}'),
+      chatId: expr("{{ $('Config').first().json.telegram_chat_id }}"),
       text: alertText,
       additionalFields: { appendAttribution: false, parse_mode: 'HTML' },
     },
@@ -209,8 +261,8 @@ const sendEmail = node({
     name: 'Alert Email',
     parameters: {
       operation: 'send',
-      fromEmail: expr('{{ $env.ALERT_EMAIL_FROM }}'),
-      toEmail: expr('{{ $env.ALERT_EMAIL_TO }}'),
+      fromEmail: expr("{{ $('Config').first().json.alert_email_from }}"),
+      toEmail: expr("{{ $('Config').first().json.alert_email_to }}"),
       subject: expr("[Stripe alert] {{ $('Prepare Alert').first().json.subject }}"),
       emailFormat: 'text',
       text: expr("{{ $('Prepare Alert').first().json.body }}"),
@@ -257,7 +309,9 @@ const verdict = node({
       jsCode: `const ran = (name) => { try { $(name).first(); return true; } catch (e) { return false; } };
 const telegram = ran('Telegram Sent');
 const email = ran('Email OK');
-if (!telegram && !email) throw new Error('Alert was not delivered on any channel (Telegram and email both failed)');
+let configProblem = '';
+try { configProblem = $('Config').first().json.config_problem || ''; } catch (e) {}
+if (!telegram && !email) throw new Error('Alert was not delivered on any channel (Telegram and email both failed)' + (configProblem ? ': ' + configProblem : ''));
 return { json: { telegram: telegram ? 'ok' : 'failed', email: email ? 'ok' : 'failed' } };`,
     },
     position: [2860, 580],
@@ -276,6 +330,9 @@ const sentThenMail = telegramSent.to(mailStage);
 const failedThenMail = telegramFailed.to(sendEmail);
 
 export default workflow('stripe-send-alert', 'Stripe Send Alert')
+  .add(fromParent)
+  .to(loadConfig)
+  .to(configNode)
   .add(fromParent)
   .to(prepareAlert)
   .to(

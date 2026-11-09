@@ -4,8 +4,11 @@
 # Settings the file cannot carry (errorWorkflow) are covered by check-error-workflows.ps1, not here.
 # Run: powershell -File scripts\check-sdk-drift.ps1 [-SdkDir <folder with the .sdk.ts files>]   Exit 0 = no drift, 1 = drift or error.
 # -SdkDir lets you prove the failure path with an edited copy, without touching a live workflow.
+# It also fails when a workflow has an unpublished draft: n8n 2.x edits change the draft, and the live trigger keeps running the
+# published version, so a file can match the draft while production runs something older (found in M7b-3).
+# -PublishedOnlyIds <id,...> checks only that for the given workflows, to prove the failure path on a workflow with a draft.
 # First run installs the pinned SDK (npm ci in scripts\sdk-drift, needs the network once).
-param([string]$SdkDir = (Split-Path -Parent $PSScriptRoot))
+param([string]$SdkDir = (Split-Path -Parent $PSScriptRoot), [string[]]$PublishedOnlyIds = @())
 $ErrorActionPreference = 'Stop'
 
 $tool = Join-Path $PSScriptRoot 'sdk-drift'
@@ -25,6 +28,24 @@ $workflows = @(
     @{ Id = '3dvdSRSD6ObBVsxy'; File = 'stripe-render-invoice.sdk.ts' }
     @{ Id = 'Yel7C2ufq8wR5s3W'; File = 'stripe-send-telegram.sdk.ts' }
 )
+
+# Draft and published version ids come from the same export; versionId is the draft, activeVersionId what the trigger runs.
+function Test-Published([string]$Id, [string]$Raw) {
+    $wf = @($Raw.Substring($Raw.IndexOf('[')) | ConvertFrom-Json)[0]
+    return ($wf.activeVersionId -and $wf.versionId -eq $wf.activeVersionId)
+}
+# powershell -File passes "a,b" as one string: split it here.
+$PublishedOnlyIds = @($PublishedOnlyIds | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+if ($PublishedOnlyIds.Count -gt 0) {
+    $bad = 0
+    foreach ($id in $PublishedOnlyIds) {
+        $raw = (@(wsl -d Ubuntu docker exec n8n n8n export:workflow "--id=$id" 2>$null) -join "`n")
+        if ($raw.IndexOf('[') -lt 0) { Write-Host "[FAIL] $id : no workflow JSON from n8n export" -ForegroundColor Red; $bad++; continue }
+        if (Test-Published $id $raw) { Write-Host "[PASS] $id : published version is the current draft" -ForegroundColor Green }
+        else { Write-Host "[FAIL] $id : unpublished draft (live runs an older version, or the workflow is not published)" -ForegroundColor Red; $bad++ }
+    }
+    if ($bad -gt 0) { exit 1 }; exit 0
+}
 
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ('sdk-drift-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $tmp | Out-Null
@@ -46,7 +67,12 @@ try {
 
         $cmp = @(& node (Join-Path $tool 'compare.mjs') $compiled $exportFile 2>&1)
         $diffLines = @($cmp | Where-Object { "$_" -match '^DIFF|^        ' })
-        if ($LASTEXITCODE -eq 0) {
+        $cmpExit = $LASTEXITCODE
+        if (-not (Test-Published $w.Id $raw)) {
+            Write-Host "[FAIL] $($w.File) : unpublished draft in n8n ($($w.Id)): publish it, the live trigger runs an older version" -ForegroundColor Red
+            $failed++
+        }
+        if ($cmpExit -eq 0) {
             Write-Host "[PASS] $($w.File) : no differences from live ($($w.Id))" -ForegroundColor Green
         } else {
             Write-Host "[FAIL] $($w.File) : differs from live ($($w.Id))" -ForegroundColor Red

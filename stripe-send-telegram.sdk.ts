@@ -15,6 +15,57 @@ const request = trigger({
   output: [{ mode: 'text', text: '<b>Zahlung eingegangen</b>' }],
 });
 
+// Configuration: a second branch off the trigger, placed ABOVE Check Input (y 280 < 400) so n8n runs it first. Not inline, because the
+// data table node would replace the request items (and the PDF binary) with table rows. Workflows cannot read the environment.
+const loadConfig = node({
+  type: 'n8n-nodes-base.dataTable',
+  version: 1.1,
+  config: {
+    name: 'Load Config',
+    parameters: {
+      resource: 'row',
+      operation: 'get',
+      dataTableId: { __rl: true, mode: 'name', value: 'stripe_config' },
+      returnAll: true,
+    },
+    alwaysOutputData: true,
+    executeOnce: true,
+    onError: 'continueRegularOutput',
+    position: [420, 280],
+  },
+  output: [{ id: 1, telegram_chat_id: '123' }],
+});
+
+// Exactly one row, no defaults: anything else becomes config_problem, which Check Input returns as the problem.
+const configNode = node({
+  type: 'n8n-nodes-base.code',
+  version: 2,
+  config: {
+    name: 'Config',
+    parameters: {
+      mode: 'runOnceForAllItems',
+      language: 'javaScript',
+      jsCode: `const KEYS = ['telegram_chat_id'];
+const items = $input.all();
+const failure = items.find((i) => i.json && i.json.error);
+const rows = items.map((i) => i.json).filter((r) => r && r.id !== undefined && !r.error);
+const row = rows.length === 1 ? rows[0] : {};
+const out = {};
+for (const k of KEYS) out[k] = row[k] == null ? '' : String(row[k]).trim();
+let config_problem = '';
+if (failure) config_problem = 'data table stripe_config could not be read: ' + String(failure.json.error.message || failure.json.error).slice(0, 150);
+else if (rows.length !== 1) config_problem = 'data table stripe_config must have exactly one row, found ' + rows.length;
+else {
+  const empty = KEYS.filter((k) => !out[k]);
+  if (empty.length) config_problem = 'data table stripe_config: ' + empty.join(', ') + ' is empty';
+}
+return [{ json: { ...out, config_problem } }];`,
+    },
+    position: [640, 280],
+  },
+  output: [{ telegram_chat_id: '123', config_problem: '' }],
+});
+
 const checkInput = node({
   type: 'n8n-nodes-base.code',
   version: 2,
@@ -28,8 +79,9 @@ const mode = $json.mode;
 const text = typeof $json.text === 'string' ? $json.text : '';
 const caption = typeof $json.caption === 'string' ? $json.caption : '';
 const binary = $input.item.binary;
+const cfg = $('Config').first().json;
 let problem = '';
-if (!String($env.TELEGRAM_CHAT_ID || '').trim()) problem = 'Send Telegram: TELEGRAM_CHAT_ID is not set';
+if (cfg.config_problem) problem = 'Send Telegram: ' + cfg.config_problem;
 else if (mode === 'text') {
   if (!text.trim()) problem = 'Send Telegram: the text is empty';
   else if (text.length > 4096) problem = 'Send Telegram: the text is longer than 4096 characters';
@@ -105,7 +157,7 @@ const sendMessage = node({
     parameters: {
       resource: 'message',
       operation: 'sendMessage',
-      chatId: expr('{{ $env.TELEGRAM_CHAT_ID }}'),
+      chatId: expr("{{ $('Config').first().json.telegram_chat_id }}"),
       text: expr('{{ $json.text }}'),
       additionalFields: { appendAttribution: false, parse_mode: 'HTML' },
     },
@@ -125,7 +177,7 @@ const sendDocument = node({
     parameters: {
       resource: 'message',
       operation: 'sendDocument',
-      chatId: expr('{{ $env.TELEGRAM_CHAT_ID }}'),
+      chatId: expr("{{ $('Config').first().json.telegram_chat_id }}"),
       binaryData: true,
       binaryPropertyName: 'invoice_pdf',
       additionalFields: { caption: expr('{{ $json.caption }}') },
@@ -225,6 +277,9 @@ const note = sticky(
 );
 
 export default workflow('stripe-send-telegram', 'Stripe Send Telegram')
+  .add(request)
+  .to(loadConfig)
+  .to(configNode)
   .add(request)
   .to(checkInput)
   .to(
