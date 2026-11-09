@@ -25,7 +25,7 @@ const loadConfig = node({
     parameters: {
       resource: 'row',
       operation: 'get',
-      dataTableId: { __rl: true, mode: 'name', value: 'stripe_config' },
+      dataTableId: { __rl: true, mode: 'id', value: '7NM52PSapza2TNWP' },
       returnAll: true,
     },
     alwaysOutputData: true,

@@ -7,7 +7,7 @@ deployment would have to change, and how to check each item. Every item needs a 
 
 - [ ] **Public HTTPS endpoint for the Intake webhook** (reverse proxy or tunnel with a valid certificate; only the webhook path exposed, not the n8n editor).
   Verify: Stripe Dashboard -> send a test webhook -> HTTP 200; `https://<host>/` of the editor is not reachable from the internet.
-- [ ] **Live-mode webhook endpoint with its own signing secret.** Test and live use different `whsec_` values; put the live one in `.env` as `STRIPE_WEBHOOK_SECRET`.
+- [ ] **Live-mode webhook endpoint with its own signing secret.** Test and live use different `whsec_` values; put the live one into the n8n credential `Stripe webhook secret` (Hmac Secret) and, for the test scripts, `.env` `STRIPE_WEBHOOK_SECRET`.
   Verify: a request with a forged signature gets 400, and a real live event is stored (`select event_id, status from stripe_events order by received_at desc limit 3`).
 - [ ] **Stop forwarding from the Stripe CLI** (`stripe listen`) on the production host, and keep CLI keys off it.
   Verify: no `stripe` process (`Get-Process stripe`).
@@ -20,9 +20,9 @@ deployment would have to change, and how to check each item. Every item needs a 
 
 - [ ] **Real SMTP instead of Mailpit** (credential `Mailpit SMTP` is test-only: it catches everything and keeps no history across restarts), with SPF and DKIM set up for the sender domain.
   Verify: send a test invoice email to an address you control and read the headers for `spf=pass dkim=pass`.
-- [ ] **Real sender and recipient addresses.** `ALERT_EMAIL_FROM` / `ALERT_EMAIL_TO` / `INVOICE_EMAIL_FROM` are env vars; set them to addresses the client owns (the demo uses `.example` addresses). No `example.test` placeholder is left in any workflow.
+- [ ] **Real sender and recipient addresses.** `alert_email_from` / `alert_email_to` / `invoice_email_from` are columns of the n8n data table `stripe_config`; set them to addresses the client owns (the demo uses `.example` addresses). No `example.test` placeholder is left in any workflow.
   Verify: `Select-String -Path *.sdk.ts -Pattern 'example\.test'` returns nothing, and a test invoice arrives from the client's real sender address.
-- [ ] **Decide whether invoice PDFs go to Telegram (GDPR).** `TELEGRAM_SEND_PDF=true` sends each invoice PDF, which holds the customer's name and email address, to Telegram, a third party. A real deployment needs a legal basis, a processor agreement or transfer safeguard where required,
+- [ ] **Decide whether invoice PDFs go to Telegram (GDPR).** `telegram_send_pdf` = `true` (data table `stripe_config`) sends each invoice PDF, which holds the customer's name and email address, to Telegram, a third party. A real deployment needs a legal basis, a processor agreement or transfer safeguard where required,
   a retention and deletion answer (the messages stay in the chat) and a privacy-notice entry; until then use `false` (the PDF stays on the email, and the owner text still names the customer, so decide that too).
   Verify: the decision and its basis are written into the client's records, and the value in `~/n8n/.env` matches it (`docs/runbook.md` section 10).
 - [ ] **A real German invoice.** The demo invoice is explicitly not one: a fictional seller (Musterwerk, no tax number, no USt-IdNr, no bank details) and a fixed 19 % split of Stripe's gross total. A real one must carry what § 14 UStG requires of the issuer (full seller and buyer details, tax number or USt-IdNr,
@@ -31,9 +31,9 @@ deployment would have to change, and how to check each item. Every item needs a 
   Verify: a live test payment produces an invoice with the right product and payment method; the key has no write permission in the Dashboard.
 - [ ] **Customer emails are real.** The Processor sends to `customer_details.email` and fails the event if it is missing; there is no fallback address on purpose.
   Verify: a live test purchase reaches the buyer's inbox, and an event without an email ends `failed` with a clear `last_error`.
-- [ ] **Client-owned Telegram bot and chat** (new token in the `Telegram alerts` credential, new `TELEGRAM_CHAT_ID`), with at least two people in the alert chat.
+- [ ] **Client-owned Telegram bot and chat** (new token in the `Telegram alerts` credential, new `telegram_chat_id` in `stripe_config`), with at least two people in the alert chat.
   Verify: a seeded dead test event produces a Telegram message.
-- [ ] **Client-owned Healthchecks.io account** with at least two alert recipients, period 5 min, grace 10 min; its ping URL in `HEARTBEAT_URL`.
+- [ ] **Client-owned Healthchecks.io account** with at least two alert recipients, period 5 min, grace 10 min; its ping URL in the n8n data table `stripe_heartbeat`.
   Verify: `wsl --shutdown` -> a down email arrives about 15 min later on both recipients.
 
 ## Data and recovery

@@ -443,6 +443,10 @@ After the restore:
 check-offsite-restore exit: 0
 ```
 
+### Oracle testing notification
+
+The owner sent the Oracle Cloud Security Testing Request Form on 2026-11-08 for the outside nmap scans (runbook section 11). Oracle Security acknowledged it by email on 2026-11-09 with "you may proceed as planned" (owner confirmed; Claude did not see the email). The scan window 17 Nov 09:00 to 26 Nov 23:00 Berlin is confirmed. The filled form and Oracle's reply stay outside the repo: they hold the home IP and the server's public IP.
+
 ### Checks, made to fail
 
 | Check | Provoked with | Result |
@@ -560,6 +564,79 @@ SELECT count(*) FROM stripe_events (control)   1
 ```
 
 The control matches `automation`'s count (1 row, the M7a restore-drill row; no row-level security on any table). `scripts/lint-migrations.ps1` now also fails a migration from 008 on that creates a table without a GRANT to `n8n_app`. That was proven with scratch copies: a grant only in a comment FAILs, a real grant PASSes.
+
+### Workflows cannot read the environment
+
+M7b-3, built and proven on the laptop first, 2026-11-09. Times Berlin (CET, UTC+1), UTC in parentheses. No value was printed at any step.
+
+**Design.** `N8N_BLOCK_ENV_ACCESS_IN_NODE=true`.
+- The Stripe signing secret is in the crypto credential `Stripe webhook secret`. The Intake runs `Parse Signature` → `Header OK?` → `HMAC` (Crypto node) → `Verify Signature and Classify` (`timingSafeEqual`).
+- Settings are in the n8n data tables `stripe_config` (5 columns) and `stripe_heartbeat` (the ping URL alone, so it never shows up in other workflows' execution data).
+- Each workflow reads its table in a `Load Config` branch placed above its chain. n8n runs that branch first: execution 3199 ran `Config` as step 2, before `Release Stuck Events` (step 3).
+- The owner filled the tables and the credential in the n8n UI. Claude compared the table values with `~/n8n/.env` inside WSL and printed same/differs only: the 5 config values were the same; the heartbeat URL differed, because it is a new Healthchecks check (the old one was exposed in a screenshot; the owner deleted it after the Monitor pinged the new one at 09:48:26 (08:48:26 UTC)).
+- Mistake: that comparison passed the values to `docker exec -e NAME="$(...)"`, so for a moment they were on a command line inside WSL, including the old (now deleted) ping URL. Later checks pass only `-e NAME`.
+
+**Probe workflow** (`scripts/env-probe.sdk.ts`, run manually, archived afterwards). Names and READABLE/denied only:
+
+| Route | Before (execution 3188) | After (execution 3260) |
+|---|---|---|
+| `$env.STRIPE_WEBHOOK_SECRET` | READABLE | denied: access to env vars denied |
+| `$env.HEARTBEAT_URL` | READABLE | denied |
+| `$env.TZ` | READABLE | denied |
+| `$env.N8N_ENCRYPTION_KEY` | empty (the laptop's key is in the volume) | denied |
+| `{{ $env.TZ }}` in an expression | works | access to env vars denied |
+| `process.env`, `require('fs')`, `require('child_process')` | denied (Code sandbox) | denied |
+
+**`scripts/check-n8n-env.ps1`** (in e2e from now on):
+- Before the compose change: 2 FAIL (flag `false`; 7 names in n8n's environment), the tables and the credential pass.
+- After it (09:56:03 (08:56:03 UTC)): 9/9 PASS.
+
+**e2e.**
+- 54/54 with the new workflows while env access was still on.
+- After the switch the first run stopped in preflight: `check-n8n-env.ps1` printed its summary with `Write-Host`, which e2e cannot read. Fixed with `Write-Output`.
+- Then 50/50 (the five env-presence steps became one), and 50/50 again after all fail tests.
+
+**Fail tests:**
+
+| Time | Change | Result |
+|---|---|---|
+| 10:04:12 (09:04:12 UTC) | n8n recreated with env access on (temporary override file) | `check-n8n-env.ps1` **FAIL** `value: false`, `1 failed`, exit 1; restored 10:04:27, `0 failed` |
+| 10:07:18 (09:07:18 UTC) | owner emptied `stripe_config.invoice_email_from` | check **FAIL** `empty: invoice_email_from`; seeded `evt_test_m7b3_cfg` (`attempts=4`) ended `failed`, `attempts=5`, `last_error = data table stripe_config: invoice_email_from is empty`, 0 invoices, 0 side effects |
+| 10:08:27 (09:08:27 UTC) | the Monitor found it dead | alert email in Mailpit, `alerted_at` set; the owner confirmed the Telegram alert at about 10:08. This also proves Send Alert reading its config from the table. Value restored, test row removed with `clean-test-event.ps1` |
+| 10:14:55 (09:14:55 UTC) | owner saved a wrong Hmac Secret (credential `updatedAt` 09:14:24 UTC) | `check-stale-timestamp.ps1`: the correctly signed fresh request got **400** and was **not stored**, exit 1 |
+| 10:16:18 (09:16:18 UTC) | secret restored (`updatedAt` 09:16:01 UTC) | 4/4 PASS |
+
+- **Finding:** the owner's first two edits of the Hmac Secret never reached the database (`updatedAt` unchanged, the request still got 200). Those runs are not counted as proof. The working save replaced the masked field (`Ctrl+A`, paste, Save). The runbook now says to check `updatedAt`.
+- **Finding:** `update_workflow` changes only the draft; the Intake kept running the old version until `publish_workflow`, while the drift check compared the draft. `check-sdk-drift.ps1` now fails on an unpublished draft. Proven with `-PublishedOnlyIds`: FAIL for the env probe (draft only), PASS for the published Intake as control.
+
+**automation-review: FIX FIRST, fixed in this PR.**
+- **HIGH:** a broken `stripe_config` row silenced every alert while the heartbeat stayed green. Fix: the Monitor's heartbeat branch loads the alert columns too (`Load Alert Config` → `Alert Config` → `Alerts Deliverable?`) and pings only when they are complete.
+- **MEDIUM 1:** the ping URL is stored in every Monitor execution; documented (runbook section 4, CLAUDE.md).
+- **MEDIUM 2:** see the rename test below. Still unproven: "no row in `stripe_heartbeat` means no ping"; Send Alert with only the chat id missing (channel independence).
+- The draft check was then also seen failing on a real pipeline workflow: the Monitor's update before publishing gave `unpublished draft`, with no content difference.
+
+| Monitor run | State | Result |
+|---|---|---|
+| 10:43:26 (09:43:26 UTC), exec 3327 | complete | `alerts_deliverable: true`, `Heartbeat Ping` OK |
+| 10:48:26 (09:48:26 UTC), exec 3333 | owner emptied `alert_email_to` | false branch, `alert_email_to is empty`, **no ping** |
+| 10:53:26 (09:53:26 UTC), exec 3339 | cell restored, table renamed `stripe_config_renamed` | **still read and pinged** (see finding) |
+| 10:58:26 (09:58:26 UTC), exec 3345 | table renamed `cfg_renamed` | `could not be read: Data table with name "stripe_config" not found`, **no ping**; the Processor's `Config` uses the same code |
+| 12:33:26 (11:33:26 UTC), exec 3433 | name restored, references by id | `alerts_deliverable: true`, ping OK |
+
+- **Finding, data table name mode:** the node resolves a name with `LOWER(name) LIKE LOWER('%stripe_config%')` and takes the first hit (`n8n-nodes-base/.../DataTable/common/utils.js`, `data-table.repository.js`). So `stripe_config_renamed` was read as `stripe_config`, and so would any table whose name contains it (`_` is a `LIKE` wildcard too).
+- Fix: all 5 references now use the table id. `check-n8n-env.ps1` gained a step that reads the published workflows and requires id mode plus the expected table name for each reference. Seen failing during the rename (all 5 `BAD (mode name, table missing)`), passing after the switch (5 references).
+- After the switch: drift 7/7, `check-n8n-env.ps1` 0 failed, e2e 50/50 at 12:33:56 (11:33:56 UTC).
+- **Healthchecks, owner report:**
+  - The new `stripe-pipeline` check had been created with period **5 days**, grace **10 hours** (wrong unit). So from 09:48 until the owner fixed it, the "green" check would only have alerted after more than 5 days. Set to 5 min / 10 min around 11:10.
+  - The check then went **down at about 11:12** (red in the list), but **no down email arrived**. Email alerting from this check is not proven; investigated below.
+- **Exposure:** the Healthchecks checks list shows every ping URL (Ping URL column), so a list screenshot exposed the current `stripe-pipeline` and `m7-server-backup` URLs. In Step 0 Claude had wrongly said the list shows none. Both are rotated at the end of this PR, and the rule is now "never screenshot any Healthchecks page" (CLAUDE.md, runbook section 7).
+
+**Server** (no workflows yet), with the owner's approval.
+- `bootstrap.sh` writes `secrets/n8n_encryption_key` from `.env` (uid 1000, mode 400) and compose passes only `N8N_ENCRYPTION_KEY_FILE`.
+- After it: healthz 200, block flag `true`, `N8N_ENCRYPTION_KEY`, `STRIPE_WEBHOOK_SECRET`, `HEARTBEAT_URL` and `TELEGRAM_CHAT_ID` absent from `printenv` and from `docker inspect`, 0 × "Mismatching encryption keys". IMDS check, `check-db-role.ps1` and `check-prod-stack.ps1` (13/13) still pass.
+- **Fail test** (10:26:17 (09:26:17 UTC)): a wrong key in the file stopped n8n: healthz not OK, 4 restarts, log `Error: Mismatching encryption keys`. So the key really comes from the file.
+- **Finding while checking the owner's condition for the restore:** `install` writes a new file, a running container keeps the old one mounted, and `docker compose up -d` saw no change ("Running"). `bootstrap.sh` now recreates n8n when the key file changed.
+- Restore with `bootstrap.sh` at 10:26:59 (09:26:59 UTC): healthz 200, 0 restarts, 0 × "Mismatching encryption keys".
 
 ## Safety guards
 

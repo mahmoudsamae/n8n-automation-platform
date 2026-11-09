@@ -25,8 +25,8 @@ Stop: `wsl -d Ubuntu bash -c "cd ~/n8n && docker compose stop"`. Never `docker c
 powershell -File scripts\e2e.ps1
 ```
 
-It checks containers (including `gotenberg`), migrations 005 and 006, the `errorWorkflow` settings of all 7 workflows, that each `.sdk.ts` file matches its live workflow (`scripts\check-sdk-drift.ps1`; the first run installs the pinned SDK with `npm ci`), that CLAUDE.md is within its line limit and no README or docs link is broken (`scripts\check-docs.ps1`), a fresh Postgres dump, that the backup container can log in over TCP and is not failing, the env vars
-(`TELEGRAM_SEND_PDF` must be exactly `true` or `false`), then pushes one real demo payment (`scripts\demo-payment.ps1`) through the whole pipeline: invoice row, exactly 1 email with exactly 1 real PDF, the Telegram document, a resend, a Processor re-run, and ends with a stale-timestamp check.
+It checks containers (including `gotenberg`), migrations 005 and 006, the `errorWorkflow` settings of all 7 workflows, that each `.sdk.ts` file matches its live workflow (`scripts\check-sdk-drift.ps1`; the first run installs the pinned SDK with `npm ci`), that CLAUDE.md is within its line limit and no README or docs link is broken (`scripts\check-docs.ps1`), a fresh Postgres dump, that the backup container can log in over TCP and is not failing, that workflows cannot read the environment and their config is complete
+(`scripts\check-n8n-env.ps1`: data tables `stripe_config` and `stripe_heartbeat`, `telegram_send_pdf` exactly `true` or `false`), then pushes one real demo payment (`scripts\demo-payment.ps1`) through the whole pipeline: invoice row, exactly 1 email with exactly 1 real PDF, the Telegram document, a resend, a Processor re-run, and ends with a stale-timestamp check.
 It creates one `e2e=true` event and deletes no real data (its only deletes are its own two `evt_test_e2e_stale_*` rows). For a read-only look: `scripts\check-error-workflows.ps1`.
 
 ## 3. What each alert means
@@ -38,12 +38,12 @@ It creates one `e2e=true` event and deletes no real data (its only deletes are i
 | `STUCK FAILED` | `failed`, attempts < 5, retry overdue 10+ min. Same cause as above. | Same as stale pending. |
 | `STUCK PROCESSING` | `processing` for 20+ min. A run died mid-event. | The Processor releases rows at 10 min by itself; if it did not, the Processor is not running. |
 | `DEAD` with `last_error` `Render PDF (Gotenberg): ...` | The PDF could not be produced for 5 attempts (the owner got ONE text saying "PDF fehlt"). | Section 10: is `gotenberg` running? Then replay (section 5): only the missing email and document are sent. |
-| `DEAD` with `last_error` `TELEGRAM_SEND_PDF must be set to true or false ...` | The variable is missing or wrong in the n8n container. | Section 10: set it in `~/n8n/.env` and in the compose `environment:` of n8n, `docker compose up -d --no-deps n8n`, replay. |
+| `DEAD` with `last_error` `data table stripe_config ...` or `telegram_send_pdf in data table stripe_config must be true or false` | The config row is missing, doubled or has an empty or wrong value. | n8n > Overview > Data tables > `stripe_config`: exactly one row, every cell filled (section 10). `scripts\check-n8n-env.ps1` names the problem. Then replay. |
 | `DEAD` with `last_error` `... No such checkout.session ...` or another Stripe message | The one Stripe lookup for the invoice failed (a 4xx is not retried). | Check the `Stripe read-only` credential and the session id in the payload; nothing was sent and no invoice exists. |
 | `Workflow error: <workflow> / <node>` | A workflow crashed. One alert per (workflow, node) per 15 min, later ones say "N similar errors suppressed". | Open the execution id from the alert. Postgres down is the common cause: `docker ps`, `docker start postgres`. |
 | Healthchecks.io "stripe-pipeline is down" | No ping for about 15 min. n8n, WSL, the PC or the network is down. | Section 4. |
 
-Alerts go to Telegram and to email (`ALERT_EMAIL_TO`). One channel failing is absorbed. If both fail, the Monitor retries on its next run.
+Alerts go to Telegram and to email (`stripe_config.alert_email_to`). One channel failing is absorbed. If both fail, the Monitor retries on its next run.
 
 ## 4. Heartbeat is down
 
@@ -52,7 +52,9 @@ Work from the outside in:
 1. Is the PC on and online? Was it a planned shutdown without Pause? Then just start the stack (section 1).
 2. `wsl -l -v`: is Ubuntu `Running`? If not, run any `wsl` command to start it, then section 1.
 3. `wsl -d Ubuntu docker ps`: are `n8n`, `postgres`, `mailpit`, `postgres-backup` all `Up`? Missing one: `docker compose up -d`.
-4. `http://localhost:5678/healthz` should return 200. If n8n is up but the heartbeat is still down: open the Monitor's executions, look at `Heartbeat Ping`. The ping URL must be set (`docker exec n8n printenv HEARTBEAT_URL` prints a secret, so only check that it is non-empty; `scripts\e2e.ps1` does this).
+4. `http://localhost:5678/healthz` should return 200. If n8n is up but the heartbeat is still down: open the Monitor's executions, look at `Heartbeat Ping`. The ping URL must be the one row of data table `stripe_heartbeat` (no row means no ping). `scripts\check-n8n-env.ps1` checks that without printing it; never open that row through the n8n MCP or in a screenshot.
+   **The Monitor also skips the ping on purpose** when the alert settings in `stripe_config` (`telegram_chat_id`, `alert_email_to`, `alert_email_from`) are incomplete or the table cannot be read: then no n8n alert could reach anyone, so Healthchecks' own email is the alarm. Look at the node `Alert Config` in the latest Monitor execution: its `config_problem` names the cause (it shows no values). Fix the row, the next run pings again.
+   Note: the ping URL is stored in every Monitor execution (output of `Load Heartbeat URL`), in n8n's SQLite and in the editor's execution view. Treat execution data like the table itself: never read that node through the MCP or show it in a screenshot.
 5. The Monitor itself must be published and active (`scripts\check-error-workflows.ps1` lists it).
 
 A green heartbeat only proves n8n's scheduler and network work. It does not prove Postgres or the Processor; those are covered by the alerts in section 3.
@@ -102,11 +104,13 @@ Rebuild it with section 8. Backups sit on the same disk as the database: they pr
 
 Never paste a secret into chat, a ticket or a commit. Edit `~/n8n/.env` in WSL, and apply with `docker compose up -d` (not `restart`).
 
-**`STRIPE_WEBHOOK_SECRET`** (`whsec_...`)
-1. Local CLI: restart `stripe listen --all-snapshot --forward-to localhost:5678/webhook/stripe-intake`. It prints the new `whsec_` on STDERR.
-2. Put it into `.env`, then `wsl -d Ubuntu bash -c "cd ~/n8n && docker compose up -d n8n"`.
-3. Verify: `stripe trigger checkout.session.completed` is stored; a request with a fake signature gets 400 (`scripts\e2e.ps1` checks both).
-Until step 2 finishes, every event gets 400. Stripe retries those later.
+**The Stripe signing secret** (`whsec_...`). It lives in two places that must agree: the n8n credential `Stripe webhook secret` (type crypto, field Hmac Secret), which the Intake's HMAC node uses, and `STRIPE_WEBHOOK_SECRET` in `.env`, which only the host-side test scripts use to sign test requests. n8n never gets it as a variable.
+1. Get the new value: `stripe listen --print-secret` (or the server endpoint's signing secret in the Stripe Dashboard).
+2. n8n > Overview > Credentials > `Stripe webhook secret` > Hmac Secret: `Ctrl+A`, paste, **Save**. The field shows a masked placeholder: text typed onto it is ignored, so select all first.
+   Confirm the save reached the database: the credential's `updatedAt` in n8n's SQLite must change (in M7b-3 two edits that looked saved were not).
+3. Put the same value into `.env` as `STRIPE_WEBHOOK_SECRET` (no restart needed: n8n does not read it).
+4. Verify: `scripts\check-stale-timestamp.ps1` (a fresh correctly signed request is stored, a stale one gets 400) and `scripts\e2e.ps1`.
+Rehearsed in M7b-3 as a fail test: a wrong Hmac Secret made a correctly signed request get 400 and not be stored; restoring it made it pass again.
 
 **`POSTGRES_PASSWORD`** (the trap: this variable only sets the password when the data volume is created, so changing `.env` alone changes nothing in the database).
 Rehearsed on 2026-10-30; steps 1-7 are what was done. The new value never appears on screen, in chat, on a command line or in shell history.
@@ -147,10 +151,12 @@ Prove it can fail: `$env:PGPASSWORD = 'wrong'` then run it, expect `[FAIL] TCP a
 **Telegram bot token**: revoke and re-issue it with BotFather, then update the n8n credential `Telegram alerts` (it is not in `.env`).
 Verify with a seeded dead test event (`scripts\seed-test-event.ps1 -Id evt_test_x -Status failed -Attempts 5`), then delete that row.
 
-**`HEARTBEAT_URL`**: the URL is the only credential. Create a replacement check in Healthchecks.io with the same period and grace,
-put its URL into `.env`, `docker compose up -d n8n`, confirm the new check turns green, then delete the old check.
+**Never take a screenshot of a Healthchecks page.** The checks list shows every check's ping URL (Ping URL column) and a check page shows it under "How To Ping"; a list screenshot exposed two URLs in M7b-3. Read out the status and the last-ping time instead. Any URL that was on screen in a shared image is rotated.
 
-Rehearsed in this project: the Postgres password and `HEARTBEAT_URL`. The Telegram token and `STRIPE_WEBHOOK_SECRET` steps are written from how the system is wired and not rehearsed.
+**The heartbeat ping URL**: the URL is the only credential. Create a replacement check in Healthchecks.io with the same period and grace,
+paste its URL into n8n > Data tables > `stripe_heartbeat` > `heartbeat_url` (no restart), update Bitwarden, confirm the new check gets the next Monitor ping (every 5 min), then delete the old check.
+
+Rehearsed in this project: the Postgres password, the heartbeat URL (M5 through `.env`, M7b-3 through the data table) and the signing secret (M7b-3, see above). The Telegram token steps are written from how the system is wired and not rehearsed.
 
 ## 8. Rebuild n8n from the `.sdk.ts` files
 
@@ -158,14 +164,16 @@ Needed if the `n8n_data` volume is lost. The seven workflows are in the repo: `s
 `stripe-send-alert.sdk.ts`, `stripe-render-invoice.sdk.ts`, `stripe-send-telegram.sdk.ts`.
 
 1. Start the stack, create the n8n owner account.
-2. Re-create four credentials by hand (they are never exported): `Postgres automation` (host `postgres`, DB and user `automation`),
-   `Mailpit SMTP` (host `mailpit`, port 1025, no auth), `Telegram alerts` (bot token), `Stripe read-only` (type Stripe API, a restricted test-mode key with read access to Checkout Sessions, PaymentIntents and Charges, restricted to `api.stripe.com`).
+2. Re-create five credentials by hand (they are never exported): `Postgres automation` (host `postgres`, DB and user `automation`),
+   `Mailpit SMTP` (host `mailpit`, port 1025, no auth), `Telegram alerts` (bot token), `Stripe read-only` (type Stripe API, a restricted test-mode key with read access to Checkout Sessions, PaymentIntents and Charges, restricted to `api.stripe.com`),
+   `Stripe webhook secret` (type Crypto, only Hmac Secret = the `whsec_`).
+   Re-create the two data tables (Overview > Data tables), each with exactly one row. The workflows reference them by id, so put the new ids into the `dataTableId` values of the `.sdk.ts` files (5 references) like the credential ids: `stripe_config` (string columns `telegram_chat_id`, `alert_email_to`, `alert_email_from`, `invoice_email_from`, `telegram_send_pdf`) and `stripe_heartbeat` (`heartbeat_url`). `scripts\check-n8n-env.ps1` must pass.
 3. Create the workflows from the files (n8n MCP `create_workflow_from_code`) in this order: Send Alert, Error Handler, **Render Invoice, Send Telegram**, then Monitor, Intake and the Processor last.
 4. **New workflow ids.** The Monitor calls Send Alert by id, the Processor calls Render Invoice and Send Telegram by id, and `errorWorkflow` points at the Error Handler by id. Update: the ids in
    `stripe-monitor.sdk.ts` (Send Alert) and `stripe-processor.sdk.ts` (Render Invoice, Send Telegram), the ids in `scripts\check-error-workflows.ps1`, `scripts\hooks\n8n-drift-reminder.mjs`, and the table in `CLAUDE.md`.
 5. Set `settings.errorWorkflow` (= Error Handler id) on Intake, Processor and Monitor with `update_workflow`; the `.sdk.ts` files cannot carry it.
    Leave it empty on the Error Handler, Send Alert, Render Invoice and Send Telegram (the first so a failing alert can never trigger another alert, the other two because they return their problems to the Processor).
-6. Publish all seven, then `scripts\check-sdk-drift.ps1`, `scripts\check-error-workflows.ps1` and `scripts\e2e.ps1` must pass.
+6. Publish all seven (an unpublished draft is not what the trigger runs; the drift check fails on one), then `scripts\check-sdk-drift.ps1`, `scripts\check-error-workflows.ps1` and `scripts\e2e.ps1` must pass.
 
 ## 9. Known limits
 
@@ -186,12 +194,12 @@ from that row alone, so a retry or a replay produces the same document and never
 If it is down the Processor keeps retrying every minute: no email is sent, the owner gets ONE text saying "PDF fehlt", and `last_error` says `Render PDF (Gotenberg): ...`. When it is back the next run sends the email and the document, and not a second text.
 
 **Sending the PDF to Telegram is a data-protection decision.** The invoice PDF contains the customer's name and email address (and what they bought). Sending it to Telegram passes that personal data to a third party, a messaging provider whose servers are outside this deployment.
-Under the GDPR a real deployment must decide this on purpose: it needs a legal basis, a processor agreement or other transfer safeguard where required, a retention and deletion answer (the messages stay in the chat), and a mention in the privacy notice. Until then run with `TELEGRAM_SEND_PDF=false`:
+Under the GDPR a real deployment must decide this on purpose: it needs a legal basis, a processor agreement or other transfer safeguard where required, a retention and deletion answer (the messages stay in the chat), and a mention in the privacy notice. Until then run with `telegram_send_pdf` set to `false`:
 the owner text still goes out (it also names the customer) and the PDF stays on the email only. In this portfolio project everything is sandbox data and the value is `true` for the demo. This is documentation for a hypothetical client, not legal advice.
 
-**`TELEGRAM_SEND_PDF`.** Exactly `true` or `false`, no default: unset or anything else fails every event with `TELEGRAM_SEND_PDF must be set to true or false in the n8n environment`. Two lines have to agree:
-`~/n8n/.env` gets `TELEGRAM_SEND_PDF=true` (or `false`), and the `n8n` service in `~/n8n/docker-compose.yml` lists `      - TELEGRAM_SEND_PDF=${TELEGRAM_SEND_PDF}` under `environment:`. Apply with `docker compose up -d --no-deps n8n` (this drops the n8n MCP for a moment).
-With `false` no document is sent and `telegram_document` is not required for `done`. To try the other value once without touching `.env`: `TELEGRAM_SEND_PDF=false docker compose up -d --no-deps n8n`, then a plain `docker compose up -d --no-deps n8n` to go back.
+**`telegram_send_pdf`** (data table `stripe_config`). Exactly `true` or `false`, no default: empty or anything else fails every event with a clear `last_error` (`telegram_send_pdf in data table stripe_config must be true or false`, or `... is empty`).
+Change it in n8n > Overview > Data tables > `stripe_config`; it applies on the next Processor run, no restart. Workflows cannot read the environment (`N8N_BLOCK_ENV_ACCESS_IN_NODE=true`), so a `.env` line has no effect.
+With `false` no document is sent and `telegram_document` is not required for `done`.
 
 **Rotate the `Stripe read-only` key.** In the Stripe Dashboard (test mode) create a replacement restricted key with the same three read permissions, put it into the n8n credential `Stripe read-only`, run `scripts\demo-payment.ps1` with a listener (or `scripts\e2e.ps1`) and check that the event ends `done`, then delete the old key. The key is not in `.env` and never in git.
 
@@ -222,7 +230,7 @@ The private key is only on the laptop (`~/.config/age/m7-backup.key` in WSL) and
 3. Compute > Instances > Create: `m7-server`, Ubuntu 24.04, `VM.Standard.A1.Flex`, 1 OCPU, 4 GB, `m7-vcn` public subnet, public IPv4, paste `oci_m7.pub`. Advanced options > Management: paste `infra/cloud-init.yaml`, replacing `__TAILSCALE_AUTHKEY__` in that box only. "Out of host capacity": try the other availability domains, then later off-peak. No scripts that hammer the API.
 4. Instance > Oracle Cloud Agent: Compute Instance Monitoring enabled. Tailscale > Machines > `m7-server`: disable key expiry. Keys: the auth key is used.
 5. On the VM: `ssh-keygen -t ed25519 -f ~/.ssh/repo_deploy -N "" -C m7-server-deploy`. GitHub > Settings > Deploy keys: add the `.pub`, write access off. Clone with `git clone -c core.sshCommand="ssh -i ~/.ssh/repo_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new" git@github.com:mahmoudsamae/n8n-automation-platform.git ~/n8n-workflows`.
-6. `cd ~/n8n-workflows && cp infra/env.example .env && chmod 600 .env`, fill it from the Bitwarden items `M7 server POSTGRES_PASSWORD`, `M7 server N8N_ENCRYPTION_KEY`, `M7 OCI backup write URL`, `M7 Healthchecks backup ping URL`. Do not generate new values. No migrations: the restore creates the tables.
+6. `cd ~/n8n-workflows && cp infra/env.example .env && chmod 600 .env`, fill it from the Bitwarden items `M7 server POSTGRES_PASSWORD`, `M7 server N8N_ENCRYPTION_KEY`, `M7 OCI backup write URL`, `M7 Healthchecks backup ping URL`, `M7 server n8n_app DB password`. Do not generate new values. No migrations: the restore creates the tables.
 7. `bash infra/bootstrap.sh`. Laptop: `powershell -File scripts\server-restore.ps1 -File <newest .age>` (refuses a database that has tables), then the restore check above.
 8. Over Tailscale: `bash infra/harden-ssh.sh`. Then the three health checks.
 9. Only after green: terminate the old VM, tick **Permanently delete the attached boot volume** (the free limit counts it), remove its deploy key. Update the testing form's IP with Oracle before any further scan.
@@ -237,6 +245,8 @@ Containers are kept away from the metadata service (`169.254.169.254`, where use
 2. Laptop: `tailscale down`, then `powershell -File scripts\check-public-ports.ps1 -Mode Public -Ip <public-ip> -Scope ControlPort -Port 18999 -WindowStart <start> -WindowEnd <end> -SourceIp <source-ip>`. It must report the port OPEN, exit 1.
 3. `tailscale up`. Stop `nc`, `sudo iptables -D INPUT -p tcp -s <source-ip> --dport 18999 -j ACCEPT`, delete the Security List rule. `tailscale down`, run step 2 again: no open port, exit 0.
 4. Same parameters with `-Scope Full` (all 65535 TCP ports at 100 packets/s, about 11 minutes or more). Exit 0, then `tailscale up`.
+
+**n8n's environment.** Workflows cannot read it (`N8N_BLOCK_ENV_ACCESS_IN_NODE=true`), and nothing secret is passed in: config is in the data tables, the signing secret in a credential (section 7). `N8N_ENCRYPTION_KEY` stays in `.env` (written from Bitwarden), and `bootstrap.sh` copies it to `secrets/n8n_encryption_key` (owner uid 1000, mode 400, gitignored), which compose mounts as a secret (`N8N_ENCRYPTION_KEY_FILE`). So the key is in no process environment and not in `docker inspect`. A changed key file makes `bootstrap.sh` recreate n8n (a running container keeps the old file). A key that does not match the one n8n stored in its volume stops n8n with "Mismatching encryption keys" (provoked in M7b-3).
 
 **Database roles.** `automation` owns every table and is used only for migrations (run by the owner) and the `docker exec` scripts. n8n connects as `n8n_app` (migration 007): no DDL, no DELETE, no TRUNCATE, only the privileges its SQL needs. Its password is in the n8n credential, in `.env` as `N8N_DB_PASSWORD` (read by `check-db-role.ps1`) and in Bitwarden "M7 server n8n_app DB password". A new table needs an explicit `GRANT ... TO n8n_app` in its migration (`lint-migrations.ps1` enforces it). Rotate: `\password n8n_app`, then the credential, `.env` and Bitwarden, then `check-db-role.ps1`.
 

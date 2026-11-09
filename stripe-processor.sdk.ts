@@ -20,6 +20,9 @@ const everyMinute = trigger({
 // Configuration: a second branch off the trigger, placed ABOVE the event chain (y 310 < 400) so n8n runs it first; the chain then
 // reads $('Config').first(). The data table node replaces items with table rows, which is why it is not inline.
 // Load Config absorbs its own error (continueRegularOutput) so Config can turn a missing table into a clear config_problem.
+// The table is referenced by id, not by name: n8n's name mode matches LIKE '%name%' and takes the first hit, so a table called
+// stripe_config_renamed or stripe_config_backup could be read instead (seen in M7b-3). Ids differ per n8n instance, like credential
+// ids; scripts\check-n8n-env.ps1 checks that every referenced id exists and carries the expected name.
 const loadConfig = node({
   type: 'n8n-nodes-base.dataTable',
   version: 1.1,
@@ -28,7 +31,7 @@ const loadConfig = node({
     parameters: {
       resource: 'row',
       operation: 'get',
-      dataTableId: { __rl: true, mode: 'name', value: 'stripe_config' },
+      dataTableId: { __rl: true, mode: 'id', value: '7NM52PSapza2TNWP' },
       returnAll: true,
     },
     alwaysOutputData: true,

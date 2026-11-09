@@ -40,6 +40,18 @@ for (const name of ['stripe_config', 'stripe_heartbeat']) {
     console.log('heartbeat_shape=' + (/^https:\/\/hc-ping\.com\/\S+$/.test(String(rows[0].heartbeat_url ?? '').trim()) ? 'ok' : 'BAD'));
   }
 }
+// Every data table node in the PUBLISHED pipeline workflows must reference its table by id (name mode matches LIKE '%name%' and
+// can pick another table), and that id must exist with the expected name: stripe_heartbeat for the heartbeat URL, stripe_config otherwise.
+const names = new Map(db.prepare('select id, name from data_table').all().map((r) => [r.id, r.name]));
+const wfs = db.prepare("select w.name as wname, h.nodes from workflow_entity w join workflow_history h on h.versionId = w.activeVersionId where w.isArchived = 0 and w.name like 'Stripe %'").all();
+for (const w of wfs) {
+  for (const n of JSON.parse(w.nodes).filter((x) => x.type === 'n8n-nodes-base.dataTable')) {
+    const ref = n.parameters.dataTableId || {};
+    const want = n.name === 'Load Heartbeat URL' ? 'stripe_heartbeat' : 'stripe_config';
+    const ok = ref.mode === 'id' && names.get(ref.value) === want;
+    console.log('ref=' + w.wname + ' / ' + n.name + ': ' + (ok ? 'ok' : 'BAD (mode ' + ref.mode + ', table ' + (names.get(ref.value) || 'missing') + ', expected ' + want + ')'));
+  }
+}
 const cred = db.prepare("select count(*) as n from credentials_entity where name = 'Stripe webhook secret' and type = 'crypto'").get();
 console.log('crypto_credential=' + cred.n);
 JS
@@ -63,6 +75,9 @@ foreach ($t in 'stripe_config', 'stripe_heartbeat') {
 $sendPdf = Get-One 'telegram_send_pdf'
 Write-Step 'stripe_config.telegram_send_pdf is exactly true or false' ($sendPdf -in 'true', 'false') $(if ($sendPdf) { $sendPdf } else { 'not reported' })
 Write-Step 'stripe_heartbeat.heartbeat_url is an https://hc-ping.com/ URL' ((Get-One 'heartbeat_shape') -eq 'ok') (Get-One 'heartbeat_shape')
+$refs = @(Get-Values 'ref')
+$badRefs = @($refs | Where-Object { $_ -notlike '*: ok' })
+Write-Step 'published workflows reference the data tables by id, and each id has the expected name' ($refs.Count -ge 5 -and $badRefs.Count -eq 0) $(if ($badRefs.Count) { $badRefs -join '; ' } else { "$($refs.Count) references" })
 Write-Step 'crypto credential "Stripe webhook secret" exists' ((Get-One 'crypto_credential') -eq '1') "$(Get-One 'crypto_credential') found"
 
 # Write-Output, not Write-Host: e2e reads these two lines from the pipeline.
