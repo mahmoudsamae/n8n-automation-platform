@@ -56,6 +56,7 @@ Work from the outside in:
    **The Monitor also skips the ping on purpose** when the alert settings in `stripe_config` (`telegram_chat_id`, `alert_email_to`, `alert_email_from`) are incomplete or the table cannot be read: then no n8n alert could reach anyone, so Healthchecks' own email is the alarm. Look at the node `Alert Config` in the latest Monitor execution: its `config_problem` names the cause (it shows no values). Fix the row, the next run pings again.
    Note: the ping URL is stored in every Monitor execution (output of `Load Heartbeat URL`), in n8n's SQLite and in the editor's execution view. Treat execution data like the table itself: never read that node through the MCP or show it in a screenshot.
 5. The Monitor itself must be published and active (`scripts\check-error-workflows.ps1` lists it).
+6. A gap in ALL executions (Monitor and Processor) while WSL stayed up: look for an out-of-memory kill, `journalctl --since "<start of the gap>" | grep -i "out of memory"` in WSL. On 9 Nov the kernel killed n8n (1.38 GB, WSL capped at 2 GB), Docker restarted it, and Healthchecks emailed the down 15 min after the last ping (`docs/evidence.md`).
 
 A green heartbeat only proves n8n's scheduler and network work. It does not prove Postgres or the Processor; those are covered by the alerts in section 3.
 
@@ -182,6 +183,8 @@ Needed if the `n8n_data` volume is lost. The seven workflows are in the repo: `s
 - An undeliverable crash alert still uses up its 15 min throttle window.
 - Both alert channels failing at once, and real Telegram 429/5xx backoff, were never provoked. The same holds for a failing `sendDocument` call; the retry loop itself was proven in the engine with a stub.
 - The Telegram sends have no timeout: n8n's Telegram node has no timeout option (checked in the n8n 2.45.6 container). A hung call holds one Processor run until the 10 min stuck-row release, and the `stuck processing` alert fires after 20 min; no event is lost. The fix is to replace `Send Message` and `Send Document` in `Stripe Send Telegram` with HTTP Request nodes that set `options.timeout` (30 s), then re-prove the retry loop, one live payment and e2e. Not built.
+- A wrong Hmac Secret in `Stripe webhook secret` rejects every real event with 400, and nothing in this stack alerts: no row is stored, so the Monitor sees nothing, and the heartbeat stays green. Stripe retries for up to 3 days and emails the account owner about a failing endpoint; `stripe events resend` recovers the events. So after every rotation run `scripts\check-stale-timestamp.ps1` and e2e (section 7).
+- The laptop's WSL is capped at 2 GB (`.wslconfig`). On 2026-11-09 the kernel OOM-killed n8n there (1.38 GB); the restart policy recovered it and pings resumed after 25 min. The cause of the growth is not proven; it is measured in M7b-7 on the server, where n8n is capped at 1536m.
 - If the PDF cannot be produced AND the owner text send also fails, `last_error` names the Telegram failure and the PDF problem resurfaces on the next run.
 - Stripe is test mode only. See `docs/live-mode-checklist.md`.
 

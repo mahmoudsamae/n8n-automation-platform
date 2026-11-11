@@ -628,8 +628,21 @@ M7b-3, built and proven on the laptop first, 2026-11-09. Times Berlin (CET, UTC+
 - After the switch: drift 7/7, `check-n8n-env.ps1` 0 failed, e2e 50/50 at 12:33:56 (11:33:56 UTC).
 - **Healthchecks, owner report:**
   - The new `stripe-pipeline` check had been created with period **5 days**, grace **10 hours** (wrong unit). So from 09:48 until the owner fixed it, the "green" check would only have alerted after more than 5 days. Set to 5 min / 10 min around 11:10.
-  - The check then went **down at about 11:12** (red in the list), but **no down email arrived**. Email alerting from this check is not proven; investigated below.
+  - The check then went **down at about 11:12** (red in the list), but **no down email arrived**. That one stays unexplained (it followed the period fix); the two emails below prove email alerting from this check.
+- **Healthchecks down emails, owner-checked in Gmail, matched against n8n (read-only: `scripts\n8n-executions.ps1`, a SQLite summary that prints only ping OK/not, `journalctl` in WSL):**
+  - Monitor execs 3375, 3381 and **3387 (11:33:26 (10:33:26 UTC))** pinged OK with `alerts_deliverable: true`; 3345-3369 (10:58-11:18) did not ping (table renamed, rows above).
+  - **No Monitor and no Processor run from 11:34 to 11:58.** The WSL journal: `Under memory pressure, flushing caches` from 11:38, kernel page allocation failures, then at **11:52:53 (10:52:53 UTC)** `Out of memory: Killed process ... (n8n)`, anon RSS 1,382,136 kB. WSL is capped at `memory=2GB` (`.wslconfig`). Docker's restart policy started n8n again at 11:52:57; the next Monitor run was exec 3391 at 11:58:26 (10:58:26 UTC), ping OK.
+  - Last ping 11:33:26 + period 5 min + grace 10 min = 11:48:26. **Down email: status changed at 11:48:27**, "last ping about 15 minutes ago". Matches.
+  - Second down email at **15:03:27 (14:03:27 UTC)**: last Monitor run 14:48:26 (exec 3612), the WSL boot ended 14:51:39 (laptop stack stopped after the session). Matches.
+  - Why n8n grew to 1.38 GB is **not proven**. Candidate to measure: each `docker exec n8n n8n export:...` (drift and env checks) starts a second n8n process in the same container. Followed up in M7b-7 (the server caps n8n at 1536m).
 - **Exposure:** the Healthchecks checks list shows every ping URL (Ping URL column), so a list screenshot exposed the current `stripe-pipeline` and `m7-server-backup` URLs. In Step 0 Claude had wrongly said the list shows none. Both are rotated at the end of this PR, and the rule is now "never screenshot any Healthchecks page" (CLAUDE.md, runbook section 7).
+
+**automation-review, second pass on the finished branch (2026-11-11): SHIP**, no CRITICAL or HIGH. Live Intake connections checked with `get_workflow_details`: `Insert Event` error output -> `Respond 500 Storage Failed`, `Header OK?` false -> 400, published version = draft.
+- MEDIUM: "a missing crypto credential makes HMAC fail, so n8n answers 500" (comment in `stripe-intake.sdk.ts`) was never provoked. Planned for M7b-5a: on the server, POST a signed request before that credential exists; expect 500, no row, one Error Handler alert.
+- MEDIUM: a wrong Hmac Secret gives 400 for every real event with no alert from this stack (no row, heartbeat green). Not new in M7b-3 (the env-var secret behaved the same). Documented in runbook section 9; mitigations: Stripe's failing-endpoint email, `stripe events resend`, e2e after every rotation.
+- MEDIUM (carried): the ping URL is stored in every Monitor execution; decision in M7b-7.
+
+**e2e on the finished branch (2026-11-11, about 20:30 (19:30 UTC)).** The first run stopped at step 4: `[FAIL] script aborted - psql failed (exit -1)`, 21/22. Checked right away: the event had ended `done`, `attempts=1`, no OOM kill in the journal, all containers up. `-1` is the exit code of `wsl.exe` itself (one launch failed), not of psql. The rerun gave **50/50 checks passed, 0 failed**.
 
 **Server** (no workflows yet), with the owner's approval.
 - `bootstrap.sh` writes `secrets/n8n_encryption_key` from `.env` (uid 1000, mode 400) and compose passes only `N8N_ENCRYPTION_KEY_FILE`.

@@ -1,6 +1,6 @@
 # M7b: stack and tunnel (spec)
 
-Status: plan approved by the owner on 2026-11-08. Built PR by PR; each PR updates this file's status line. M7b-1 merged (PR #16). M7b-2 merged (PR #17). M7b-3 built and proven 2026-11-09 (PR open). Design background: `docs/tasks/m7-server.md`.
+Status: plan approved by the owner on 2026-11-08. Built PR by PR; each PR updates this file's status line. M7b-1 merged (PR #16). M7b-2 merged (PR #17). M7b-3 built and proven 2026-11-09, applied on the server (PR #18 pending the ping URL rotations). M7b-5 is built as 5a (server n8n, still private) and 5b (tunnel, WAF, Stripe: goes public). Design background: `docs/tasks/m7-server.md`.
 
 ## Goal
 
@@ -85,6 +85,8 @@ Every new check is seen failing once and then passing, and the runner's summary 
 
 ### M7b-7: memory, cutover, review
 - Measure idle and during PDF renders. Oracle P95 after 7 days.
+- The 9 Nov laptop OOM kill of n8n (`docs/evidence.md`): `scripts/measure-n8n-memory.ps1` reads n8n's cgroup `memory.peak` and `oom_kill` count in four phases (idle 30 min, 10 PDF payments, the `n8n export` checks, a check during a payment); explicit pruning (`EXECUTIONS_DATA_MAX_AGE=168`, `EXECUTIONS_DATA_PRUNE_MAX_COUNT=5000`; default is already on, 336 h); a peak above 75% of the limit raises the limit and/or caps V8, then measure again.
+- `check-prod-stack.ps1` fails on n8n `OOMKilled`, a restart or an `oom_kill`. Fail once with a throwaway 64m container.
 - `check-prod-stack.ps1 -MinUsedPercent 22` (Oracle reclaims below 20%) and the sum of `mem_limit` at most 75% of RAM.
 - e2e defaults to the server; CLAUDE.md updated; the laptop stack is stopped by the owner.
 - `automation-review` SHIP.
