@@ -1,6 +1,6 @@
 # M7b: stack and tunnel (spec)
 
-Status: plan approved by the owner on 2026-11-08. Built PR by PR; each PR updates this file's status line. M7b-1 merged (PR #16). M7b-2 built and proven 2026-11-08 (PR open). Design background: `docs/tasks/m7-server.md`.
+Status: plan approved by the owner on 2026-11-08. Built PR by PR; each PR updates this file's status line. M7b-1 merged (PR #16). M7b-2 merged (PR #17). M7b-3 built and proven 2026-11-09, applied on the server, exposed ping URLs rotated 2026-11-11 (PR #18). M7b-5 is built as 5a (server n8n, still private) and 5b (tunnel, WAF, Stripe: goes public). Design background: `docs/tasks/m7-server.md`.
 
 ## Goal
 
@@ -43,9 +43,9 @@ Every new check is seen failing once and then passing, and the runner's summary 
 - Fail once: the owner grants TRUNCATE on one table and the check FAILs; revoke, then PASS. The owner also attempts the negative DDL by hand as `n8n_app`, which must show `permission denied`.
 - `lint-migrations.ps1` fails when a new table gets no grant to `n8n_app`.
 
-### M7b-3: env access blocked (laptop first)
+### M7b-3: env access blocked (laptop first; built, proofs in `docs/evidence.md`)
 - Intake verifies the signature with the Crypto node (HMAC SHA256), using credential `Stripe webhook secret` of type `crypto`, plus a `timingSafeEqual` compare. The 200/400/500 contract is unchanged.
-- Data Table `stripe_config` holds `HEARTBEAT_URL`, `TELEGRAM_CHAT_ID`, `ALERT_EMAIL_TO`, `ALERT_EMAIL_FROM`, `INVOICE_EMAIL_FROM` and `TELEGRAM_SEND_PDF`.
+- As built: two data tables, one row each. `stripe_config` holds `telegram_chat_id`, `alert_email_to`, `alert_email_from`, `invoice_email_from` and `telegram_send_pdf`. `stripe_heartbeat` holds only `heartbeat_url`, so the ping URL never appears in other workflows' execution data. Both are referenced by id (name mode matches `LIKE '%name%'`). The heartbeat pings only when the alert columns are complete (review finding).
   - A missing or invalid value still makes the event `failed` with a clear `last_error`; no defaults.
 - Compose:
   - `N8N_BLOCK_ENV_ACCESS_IN_NODE=true`.
@@ -85,6 +85,8 @@ Every new check is seen failing once and then passing, and the runner's summary 
 
 ### M7b-7: memory, cutover, review
 - Measure idle and during PDF renders. Oracle P95 after 7 days.
+- The 9 Nov laptop OOM kill of n8n (`docs/evidence.md`): `scripts/measure-n8n-memory.ps1` reads n8n's cgroup `memory.peak` and `oom_kill` count in four phases (idle 30 min, 10 PDF payments, the `n8n export` checks, a check during a payment); explicit pruning (`EXECUTIONS_DATA_MAX_AGE=168`, `EXECUTIONS_DATA_PRUNE_MAX_COUNT=5000`; default is already on, 336 h); a peak above 75% of the limit raises the limit and/or caps V8, then measure again.
+- `check-prod-stack.ps1` fails on n8n `OOMKilled`, a restart or an `oom_kill`. Fail once with a throwaway 64m container.
 - `check-prod-stack.ps1 -MinUsedPercent 22` (Oracle reclaims below 20%) and the sum of `mem_limit` at most 75% of RAM.
 - e2e defaults to the server; CLAUDE.md updated; the laptop stack is stopped by the owner.
 - `automation-review` SHIP.

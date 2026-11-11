@@ -20,7 +20,23 @@ done
 [ -s infra/backup-recipient.pub ] || fail "infra/backup-recipient.pub is missing"
 
 git pull --ff-only
+
+# n8n reads its encryption key from a file (docker-compose.prod.yml), so the key is in no process environment and not in docker inspect.
+# The file is derived from .env, the one place the owner writes it. n8n runs as uid 1000; the key never appears in output or arguments.
+# cmp fails when the file is missing OR differs, so a changed .env value always replaces it.
+mkdir -p secrets
+keyfile="$(mktemp)"
+grep -m1 '^N8N_ENCRYPTION_KEY=' .env | cut -d= -f2- | tr -d '\n' > "$keyfile"
+key_changed=0
+if ! sudo cmp -s "$keyfile" secrets/n8n_encryption_key; then
+  sudo install -o 1000 -g 1000 -m 0400 "$keyfile" secrets/n8n_encryption_key
+  key_changed=1
+fi
+shred -u "$keyfile"
+
 "${compose[@]}" up -d
+# install writes a new file, but a running container keeps the old one mounted, and up -d sees no compose change. Recreate n8n.
+if [ "$key_changed" = 1 ]; then "${compose[@]}" up -d --force-recreate n8n; fi
 
 # Only touch systemd when a unit file really changed.
 changed=0

@@ -3,7 +3,8 @@ import { workflow, node, trigger, ifElse, sticky, expr } from '@n8n/workflow-sdk
 // Settings that the SDK file does not express (set via update_workflow): settings.errorWorkflow = c2NT8k3JGpuS3r6I (Stripe Error Handler).
 // Depends on: workflow Stripe Render Invoice (id 3dvdSRSD6ObBVsxy, called by id below: if it is recreated, update the id here),
 // credential "Stripe read-only" (read-only Stripe test key, id qtmzPq7nRsOF9MAW), workflow Stripe Send Telegram (id Yel7C2ufq8wR5s3W, called by id: update it here if recreated)
-// and the env vars INVOICE_EMAIL_FROM (sender of the invoice email) and TELEGRAM_SEND_PDF (true/false: also send the invoice PDF to Telegram; no default).
+// and the data table stripe_config, columns invoice_email_from (sender of the invoice email) and telegram_send_pdf (true/false: also send
+// the invoice PDF to Telegram; no default). Workflows cannot read the environment (N8N_BLOCK_ENV_ACCESS_IN_NODE=true).
 
 const everyMinute = trigger({
   type: 'n8n-nodes-base.scheduleTrigger',
@@ -14,6 +15,61 @@ const everyMinute = trigger({
     position: [200, 400],
   },
   output: [{}],
+});
+
+// Configuration: a second branch off the trigger, placed ABOVE the event chain (y 310 < 400) so n8n runs it first; the chain then
+// reads $('Config').first(). The data table node replaces items with table rows, which is why it is not inline.
+// Load Config absorbs its own error (continueRegularOutput) so Config can turn a missing table into a clear config_problem.
+// The table is referenced by id, not by name: n8n's name mode matches LIKE '%name%' and takes the first hit, so a table called
+// stripe_config_renamed or stripe_config_backup could be read instead (seen in M7b-3). Ids differ per n8n instance, like credential
+// ids; scripts\check-n8n-env.ps1 checks that every referenced id exists and carries the expected name.
+const loadConfig = node({
+  type: 'n8n-nodes-base.dataTable',
+  version: 1.1,
+  config: {
+    name: 'Load Config',
+    parameters: {
+      resource: 'row',
+      operation: 'get',
+      dataTableId: { __rl: true, mode: 'id', value: '7NM52PSapza2TNWP' },
+      returnAll: true,
+    },
+    alwaysOutputData: true,
+    executeOnce: true,
+    onError: 'continueRegularOutput',
+    position: [420, 310],
+  },
+  output: [{ id: 1, invoice_email_from: 'Musterwerk <rechnung@musterwerk.example>', telegram_send_pdf: 'true' }],
+});
+
+// Exactly one row, no defaults: anything else becomes config_problem, and every claimed event then fails with it as last_error.
+const configNode = node({
+  type: 'n8n-nodes-base.code',
+  version: 2,
+  config: {
+    name: 'Config',
+    parameters: {
+      mode: 'runOnceForAllItems',
+      language: 'javaScript',
+      jsCode: `const KEYS = ['invoice_email_from', 'telegram_send_pdf'];
+const items = $input.all();
+const failure = items.find((i) => i.json && i.json.error);
+const rows = items.map((i) => i.json).filter((r) => r && r.id !== undefined && !r.error);
+const row = rows.length === 1 ? rows[0] : {};
+const out = {};
+for (const k of KEYS) out[k] = row[k] == null ? '' : String(row[k]).trim();
+let config_problem = '';
+if (failure) config_problem = 'data table stripe_config could not be read: ' + String(failure.json.error.message || failure.json.error).slice(0, 150);
+else if (rows.length !== 1) config_problem = 'data table stripe_config must have exactly one row, found ' + rows.length;
+else {
+  const empty = KEYS.filter((k) => !out[k]);
+  if (empty.length) config_problem = 'data table stripe_config: ' + empty.join(', ') + ' is empty';
+}
+return [{ json: { ...out, config_problem } }];`,
+    },
+    position: [640, 310],
+  },
+  output: [{ invoice_email_from: 'Musterwerk <rechnung@musterwerk.example>', telegram_send_pdf: 'true', config_problem: '' }],
 });
 
 const releaseStuck = node({
@@ -72,10 +128,12 @@ const sessionId = typeof obj.id === 'string' ? obj.id : '';
 const currency = typeof obj.currency === 'string' ? obj.currency.toLowerCase() : '';
 const amount = obj.amount_total;
 // Whether the invoice PDF also goes to Telegram. No default: it must be set on purpose (it passes customer data to a third party).
-const sendPdfRaw = String($env.TELEGRAM_SEND_PDF == null ? '' : $env.TELEGRAM_SEND_PDF).trim().toLowerCase();
+const cfg = $('Config').first().json;
+const sendPdfRaw = String(cfg.telegram_send_pdf || '').toLowerCase();
 
 let problem = '';
-if (sendPdfRaw !== 'true' && sendPdfRaw !== 'false') problem = 'TELEGRAM_SEND_PDF must be set to true or false in the n8n environment';
+if (cfg.config_problem) problem = cfg.config_problem;
+else if (sendPdfRaw !== 'true' && sendPdfRaw !== 'false') problem = 'telegram_send_pdf in data table stripe_config must be true or false';
 else if (!email) problem = 'customer_details.email is missing in the event payload';
 else if (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email)) problem = 'customer_details.email is not a valid address';
 else if (!name) problem = 'customer_details.name is missing in the event payload';
@@ -219,7 +277,7 @@ const sendEmail = node({
     name: 'Send Invoice Email',
     parameters: {
       operation: 'send',
-      fromEmail: expr('{{ $env.INVOICE_EMAIL_FROM }}'),
+      fromEmail: expr("{{ $('Config').first().json.invoice_email_from }}"),
       toEmail: expr("{{ $('Prepare Event').item.json.customer_email }}"),
       subject: expr("{{ $('Render Invoice').item.json.subject }}"),
       emailFormat: 'both',
@@ -836,6 +894,9 @@ const sessionLookup = fetchSession1
   );
 
 export default workflow('stripe-processor', 'Stripe Processor')
+  .add(everyMinute)
+  .to(loadConfig)
+  .to(configNode)
   .add(everyMinute)
   .to(releaseStuck)
   .to(claimEvents)

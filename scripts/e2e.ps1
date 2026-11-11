@@ -149,16 +149,15 @@ try {
 & "$PSScriptRoot\check-backup-health.ps1"
 Write-Step 'Postgres backup authenticates over TCP and its last log line is not backup FAILED' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
 
-# M5: the n8n container must have the alert addresses and the heartbeat URL (presence only, values are never printed).
-$envScript = 'for k in HEARTBEAT_URL ALERT_EMAIL_TO ALERT_EMAIL_FROM INVOICE_EMAIL_FROM; do v=$(docker exec n8n printenv $k); if [ -n "$v" ]; then echo "$k=set"; else echo "$k=EMPTY"; fi; done; v=$(docker exec n8n printenv TELEGRAM_SEND_PDF); case "$v" in true|false) echo "TELEGRAM_SEND_PDF=$v";; *) echo "TELEGRAM_SEND_PDF=INVALID";; esac'
-$envOut = @(& "$PSScriptRoot\wsl-sh.ps1" -Script $envScript) | ForEach-Object { "$_".Trim() } | Where-Object { $_ }
-foreach ($k in 'HEARTBEAT_URL', 'ALERT_EMAIL_TO', 'ALERT_EMAIL_FROM', 'INVOICE_EMAIL_FROM') {
-    Write-Step "n8n container has $k" ($envOut -contains "$k=set")
-}
-# TELEGRAM_SEND_PDF has no default on purpose (it decides whether customer data goes to Telegram): unset or any other value fails every event.
-$sendPdfLine = @($envOut | Where-Object { $_ -like 'TELEGRAM_SEND_PDF=*' })[0]
-$sendPdf = ($sendPdfLine -eq 'TELEGRAM_SEND_PDF=true')
-Write-Step 'n8n container has TELEGRAM_SEND_PDF set to exactly true or false' ($sendPdfLine -eq 'TELEGRAM_SEND_PDF=true' -or $sendPdfLine -eq 'TELEGRAM_SEND_PDF=false') $(if ($sendPdfLine) { $sendPdfLine } else { 'not reported' })
+# M7b-3: workflows cannot read the environment (N8N_BLOCK_ENV_ACCESS_IN_NODE=true, no secret or config name in n8n's environment); the
+# configuration lives in the data tables stripe_config and stripe_heartbeat and the signing secret in the crypto credential. Names only.
+# telegram_send_pdf has no default on purpose (it decides whether customer data goes to Telegram): anything but true/false fails every event.
+$envOut = @(& "$PSScriptRoot\check-n8n-env.ps1" | ForEach-Object { "$_".Trim() } | Where-Object { $_ })
+$envExit = $LASTEXITCODE
+$envOut | Where-Object { $_ -like '`[FAIL`]*' } | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
+Write-Step 'env access blocked, config in data tables, signing secret in the credential (check-n8n-env.ps1)' ($envExit -eq 0 -and ($envOut -contains '0 failed')) "exit $envExit"
+$sendPdfLine = @($envOut | Where-Object { $_ -like 'telegram_send_pdf=*' })[0]
+$sendPdf = ($sendPdfLine -eq 'telegram_send_pdf=true')
 
 # Two listeners would forward every event twice and skew the duplicate checks.
 $existing = Get-Process -Name stripe -ErrorAction SilentlyContinue
