@@ -1,6 +1,6 @@
 # M7c: visitor demo (spec)
 
-Status: plan approved by the owner on 2026-11-12. Built PR by PR; each PR updates this status line. M7c-1 (this spec, README portfolio link) PR open. Design background: `docs/tasks/m7-server.md`; M7b: `docs/tasks/m7b-stack-tunnel.md`. Every claim marked **[VERIFY]** is checked in the M7c-3 spike and the result recorded here before code relies on it.
+Status: plan approved by the owner on 2026-11-12. Built PR by PR; each PR updates this status line. M7c-1 (this spec, README portfolio link) merged (PR #24). M7c-2 (migration 008, nightly reset, `check-db-role.ps1` for both roles) built, PR open. Design background: `docs/tasks/m7-server.md`; M7b: `docs/tasks/m7b-stack-tunnel.md`. Every claim marked **[VERIFY]** is checked in the M7c-3 spike and the result recorded here before code relies on it.
 
 ## Goal
 

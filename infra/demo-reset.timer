@@ -1,0 +1,11 @@
+[Unit]
+Description=Nightly demo reset at 02:30, before the 03:00 offsite backup
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+# No RandomizedDelaySec: the reset must finish before the backup (03:00 plus up to 15 min), so the backup holds no visitor data from before it.
+# A VM that was off at 02:30 runs the reset at the next boot.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

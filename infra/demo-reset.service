@@ -1,0 +1,11 @@
+[Unit]
+Description=Nightly demo reset (demo data older than 5 minutes, Mailpit)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+ExecStart=/bin/bash /home/ubuntu/n8n-workflows/infra/demo-reset.sh
+# A normal run takes a few seconds; the SQL waits at most 30 s for a lock. A hung run must not block the next night.
+TimeoutStartSec=5min
