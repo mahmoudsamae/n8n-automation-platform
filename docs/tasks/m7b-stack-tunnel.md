@@ -1,6 +1,6 @@
 # M7b: stack and tunnel (spec)
 
-Status: plan approved by the owner on 2026-11-08. Built PR by PR; each PR updates this file's status line. M7b-1 merged (PR #16). M7b-2 merged (PR #17). M7b-3 built and proven 2026-11-09, applied on the server, exposed ping URLs rotated 2026-11-11 (PR #18). M7b-4 merged (PR #19). M7b-5a merged (PR #20). M7b-5b built 2026-11-12 (public through cloudflared and the WAF, server e2e 55/55 with a real delivery through Cloudflare; PR open). The server uses its own Stripe sandbox "New business sandbox" (owner decision 2026-11-11). M7b-5 is built as 5a (server n8n, still private) and 5b (tunnel, WAF, Stripe: goes public). Design background: `docs/tasks/m7-server.md`.
+Status: plan approved by the owner on 2026-11-08. Built PR by PR; each PR updates this file's status line. M7b-1 merged (PR #16). M7b-2 merged (PR #17). M7b-3 built and proven 2026-11-09, applied on the server, exposed ping URLs rotated 2026-11-11 (PR #18). M7b-4 merged (PR #19). M7b-5a merged (PR #20). M7b-5b merged (PR #21). M7b-6 built 2026-11-12 (n8n export in the offsite backup, restore drill 15/15; PR open). The server uses its own Stripe sandbox "New business sandbox" (owner decision 2026-11-11). M7b-5 is built as 5a (server n8n, still private) and 5b (tunnel, WAF, Stripe: goes public). Design background: `docs/tasks/m7-server.md`.
 
 ## Goal
 
@@ -82,6 +82,7 @@ Every new check is seen failing once and then passing, and the runner's summary 
 - The nightly backup adds `export:workflow`, `export:credentials` (encrypted) and the Data Table, sent through `age` and uploaded. The ping fires only after both uploads.
 - Restore drill into a throwaway n8n on the laptop.
 - Fail once: a wrong encryption key; a tampered `errorWorkflow`; a failing export step (no ping).
+- As built: the archive `n8n-<UTC>.tar.age` holds `workflows.json`, `credentials.json` (n8n-encrypted) and `entities.zip` (`export:entities`, the only CLI export with data table rows); plaintext only in `/dev/shm`. `scripts/check-n8n-offsite-restore.ps1` restores it twice (entities; workflows + credentials) and proves decryption with `--decrypted` only inside the throwaway's RAM (owner decision 2026-11-12). The tamper test edits `workflows.json` only (the workflows inside `entities.zip` are encrypted). The failing export is a `docker` shim in `PATH`, the script unchanged. Also seen failing: a flipped byte.
 
 ### M7b-7: memory, cutover, review
 - Measure idle and during PDF renders. Oracle P95 after 7 days.
