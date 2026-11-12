@@ -52,7 +52,7 @@ $inWindow = ($now -ge $WindowStart -and $now -lt $WindowEnd.Date.AddDays(1))
 Write-Step 'inside the filed Oracle testing window' $inWindow ("{0:yyyy-MM-dd} to {1:yyyy-MM-dd}" -f $WindowStart, $WindowEnd)
 if (-not $inWindow) { Write-Host 'no nmap was run'; exit 1 }
 $actualSource = "$(Invoke-RestMethod -Uri 'https://api.ipify.org' -TimeoutSec 15)".Trim()
-Write-Step 'source IP is the one on the form' ($actualSource -eq $SourceIp) $(if ($actualSource -eq $SourceIp) { $SourceIp } else { 'it changed: tell Oracle the new one first; no nmap was run' })
+Write-Step 'source IP is the one on the form' ($actualSource -eq $SourceIp) $(if ($actualSource -eq $SourceIp) { 'same' } else { 'differs: tell Oracle the new one first; no nmap was run' })   # never print the IP itself
 if ($failed -gt 0) { exit 1 }
 
 # Off the tailnet, so this is the view of a stranger.

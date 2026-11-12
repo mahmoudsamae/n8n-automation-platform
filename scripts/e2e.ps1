@@ -1,4 +1,5 @@
-# End-to-end check for the Stripe -> n8n pipeline. Run: powershell -File scripts\e2e.ps1 [-Target Laptop|Server] [-PreflightOnly]
+# End-to-end check for the Stripe -> n8n pipeline. Run: powershell -File scripts\e2e.ps1 [-Target Server|Laptop] [-PreflightOnly]
+# The default is the server since M7b-7 (the laptop stack is retired); -Target Laptop still works while that stack runs.
 # Non-destructive: stops no services and deletes no real data (its only deletes are its own evt_test_e2e_stale_* rows, via clean-test-event.ps1).
 # Never prints stripe listen output (it holds the signing secret).
 # -Target Server (M7b-4): runs against the M7 server over Tailscale. e2e opens its own SSH tunnel (n8n on 25678, Mailpit on 28025) and
@@ -6,7 +7,7 @@
 # Stripe delivers it to https://invoice.mahmud-alhussen.de. The fake-signature and stale-timestamp requests go to that public URL.
 # The backup checks become the server's (offsite backup journal, stack rules). Everything that differs lives in scripts\lib\target.ps1.
 param(
-    [ValidateSet('Laptop', 'Server')][string]$Target = 'Laptop',
+    [ValidateSet('Laptop', 'Server')][string]$Target = 'Server',
     [switch]$PreflightOnly
 )
 $ErrorActionPreference = 'Stop'
@@ -167,6 +168,12 @@ try {
     # Doc rot: CLAUDE.md within its line limit, every relative link and image in README and docs resolves (known-missing images warn).
     & "$PSScriptRoot\check-docs.ps1"
     Write-Step 'docs: CLAUDE.md within its line limit, no broken relative links, no public IP' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
+
+    # No script prints a raw HTTP response body (M7b-7: one printed the home IP from Cloudflare's block page). The stub run must fail.
+    $null = Invoke-Check 'http-reason: no body text or IP leaves Get-HttpReason' { & "$PSScriptRoot\lib\http-reason.test.ps1" }
+    $stubOut = @(& "$PSScriptRoot\lib\http-reason.test.ps1" -ProveFailure 6>$null)
+    $stubCode = $LASTEXITCODE
+    Write-Step 'http-reason test fails against a stub that returns the body' ($stubCode -eq 1 -and @($stubOut | Where-Object { "$_" -match '^[1-9]\d* failed$' }).Count -eq 1) "exit $stubCode, $(@($stubOut | Where-Object { "$_" -match ' failed$' }) -join '')"
 
     # Safety guards: the hook blocks destructive text sent to an executor, and wsl-sh.ps1 refuses it before sending (samples only echo).
     $null = & node "$PSScriptRoot\hooks\destructive-guard.test.mjs"

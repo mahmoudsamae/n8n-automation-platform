@@ -1,10 +1,16 @@
 # Proves the M7 stack follows its rules: compose file (no ports, pinned images, memory limits) and the live containers on the server.
 # Records memory for the evidence: docker stats and free -m.
-# Run: powershell -File scripts\check-prod-stack.ps1 [-StaticOnly] [-ComposeFile <copy>]   Exit 0 = ok, 1 = problem.
-# Prove it can fail: -StaticOnly -ComposeFile <copy with ports:, :latest or no mem_limit>. Live: start a throwaway container with a published 127.0.0.1 port.
+# Run: powershell -File scripts\check-prod-stack.ps1 [-StaticOnly] [-ComposeFile <copy>] [-MinUsedPercent 22] [-MaxLimitPercent 75]   Exit 0 = ok, 1 = problem.
+# Prove it can fail: -StaticOnly -ComposeFile <copy with ports:, :latest or no mem_limit>. Live: start a throwaway container with a published 127.0.0.1 port;
+# a throwaway container OOM-killed under a 64m limit; -MinUsedPercent 99; -MaxLimitPercent 10.
+# Memory rules (M7b-7): Oracle reclaims an Always Free A1 VM whose memory stays below 20% (its metric ignores page cache, so "used" here is
+# MemTotal - MemAvailable), hence at least -MinUsedPercent; the sum of all mem_limit at most -MaxLimitPercent of RAM, so the containers
+# cannot starve the host; and no container was OOM-killed, restarted by its restart policy, or had a process OOM-killed in its cgroup.
 param(
     [string]$ComposeFile = (Join-Path (Split-Path -Parent $PSScriptRoot) 'docker-compose.prod.yml'),
-    [switch]$StaticOnly
+    [switch]$StaticOnly,
+    [ValidateRange(0, 100)][int]$MinUsedPercent = 22,
+    [ValidateRange(1, 100)][int]$MaxLimitPercent = 75
 )
 $ErrorActionPreference = 'Stop'
 $failed = 0
@@ -27,8 +33,12 @@ if ($StaticOnly) { Write-Output ("{0} failed" -f $failed); if ($failed -gt 0) { 
 
 $sh = @'
 for c in $(docker ps -aq); do
-  docker inspect --format '{{.Name}}|{{.State.Status}}|{{.Config.Image}}|{{json .HostConfig.PortBindings}}|{{.HostConfig.Memory}}' "$c" | sed 's/^\///'
-done | sed 's/^/container=/'
+  line="$(docker inspect --format '{{.Name}}|{{.State.Status}}|{{.Config.Image}}|{{json .HostConfig.PortBindings}}|{{.HostConfig.Memory}}|{{.State.OOMKilled}}|{{.RestartCount}}|{{.Id}}' "$c" | sed 's/^\///')"
+  ev="/sys/fs/cgroup/system.slice/docker-${line##*|}.scope/memory.events"
+  oom="$(awk '$1=="oom_kill"{print $2}' "$ev" 2>/dev/null)"
+  echo "container=${line%|*}|${oom:-na}"
+done
+awk '/^MemTotal:/{t=$2} /^MemAvailable:/{a=$2} END{print "memtotal=" t; print "memavail=" a}' /proc/meminfo
 for i in $(docker ps --format '{{.Image}}' | sort -u); do
   echo "imagearch=$i|$(docker image inspect --format '{{.Architecture}}' "$i")"
 done
@@ -44,7 +54,7 @@ if ($LASTEXITCODE -ne 0) { Write-Step 'server reachable over Tailscale' $false "
 $expected = 'n8n', 'postgres', 'mailpit', 'gotenberg', 'cloudflared'
 $containers = @($out | Where-Object { "$_" -like 'container=*' } | ForEach-Object {
     $p = "$_".Substring(10) -split '\|'
-    [pscustomobject]@{ Name = $p[0]; Status = $p[1]; Image = $p[2]; Ports = $p[3]; Memory = $p[4] }
+    [pscustomobject]@{ Name = $p[0]; Status = $p[1]; Image = $p[2]; Ports = $p[3]; Memory = $p[4]; OomKilled = $p[5]; Restarts = $p[6]; OomKills = $p[7] }
 })
 foreach ($name in $expected) {
     $c = @($containers | Where-Object { $_.Name -eq $name })
@@ -57,6 +67,19 @@ $noLimit = @($containers | Where-Object { $_.Memory -eq '0' })
 Write-Step 'every container has a memory limit' ($noLimit.Count -eq 0) $(if ($noLimit.Count) { ($noLimit | ForEach-Object { $_.Name }) -join ', ' })
 $badImage = @($containers | Where-Object { $_.Image -notmatch ':[^/:]+$' -or $_.Image -match ':latest$' })
 Write-Step 'every running image is pinned' ($badImage.Count -eq 0) $(if ($badImage.Count) { ($badImage | ForEach-Object { $_.Image }) -join ', ' })
+# Exited containers too: a container that was OOM-killed and is now stopped is exactly what this must catch. oom_kill counts kills of any
+# process in the cgroup (e.g. an `n8n export` process) even when the container itself survived; 'na' = a stopped container has no cgroup.
+$oomed = @($containers | Where-Object { $_.OomKilled -eq 'true' -or ($_.OomKills -match '^\d+$' -and [int]$_.OomKills -gt 0) })
+Write-Step 'no container OOM-killed (State.OOMKilled, cgroup oom_kill)' ($oomed.Count -eq 0) $(if ($oomed.Count) { ($oomed | ForEach-Object { "$($_.Name) OOMKilled=$($_.OomKilled) oom_kill=$($_.OomKills)" }) -join ', ' } else { "$($containers.Count) containers" })
+$restarted = @($containers | Where-Object { $_.Restarts -match '^\d+$' -and [int]$_.Restarts -gt 0 })
+Write-Step 'no container restarted by its restart policy' ($restarted.Count -eq 0) $(if ($restarted.Count) { ($restarted | ForEach-Object { "$($_.Name) x$($_.Restarts)" }) -join ', ' })
+$memTotal = [double]"$(@($out | Where-Object { "$_" -like 'memtotal=*' }))".Substring(9)
+$memAvail = [double]"$(@($out | Where-Object { "$_" -like 'memavail=*' }))".Substring(9)
+$usedPct = [math]::Round(100 * ($memTotal - $memAvail) / $memTotal, 1)
+Write-Step "memory used at least $MinUsedPercent% (Oracle reclaims below 20%)" ($usedPct -ge $MinUsedPercent) "$usedPct% of $([math]::Round($memTotal / 1024)) MB (MemTotal - MemAvailable)"
+$limitSum = 0.0; foreach ($c in $containers) { if ($c.Status -eq 'running' -and $c.Memory -match '^\d+$') { $limitSum += [double]$c.Memory } }
+$limitPct = [math]::Round(100 * $limitSum / ($memTotal * 1024), 1)
+Write-Step "sum of running containers' mem_limit at most $MaxLimitPercent% of RAM" ($limitPct -le $MaxLimitPercent) "$([math]::Round($limitSum / 1MB)) MB = $limitPct%"
 $arches = @($out | Where-Object { "$_" -like 'imagearch=*' })
 $notArm = @($arches | Where-Object { "$_" -notmatch '\|arm64$' })
 Write-Step 'every image is arm64' ($arches.Count -gt 0 -and $notArm.Count -eq 0) $(if ($notArm.Count) { $notArm -join ', ' })

@@ -14,7 +14,10 @@ $T = Get-Target $Target
 if (-not $ErrorHandlerId) { $ErrorHandlerId = $ErrorHandlerWorkflowId }
 
 # id, expected name, expected errorWorkflow ('' = must have none); the same list import-workflows.ps1 sets them from.
-$expected = @(Get-Workflows | ForEach-Object { @{ Id = $_.Id; Name = $_.Name; Target = $(if ($_.ErrorHandler) { $ErrorHandlerId } else { '' }) } })
+$expected = @(Get-Workflows | ForEach-Object {
+    $s = @{} + $_.Settings; if ($Target -eq 'Server' -and $_.ServerSettings) { $s += $_.ServerSettings }
+    @{ Id = $_.Id; Name = $_.Name; Target = $(if ($_.ErrorHandler) { $ErrorHandlerId } else { '' }); Settings = $s }
+})
 
 $failed = 0
 foreach ($w in $expected) {
@@ -37,6 +40,10 @@ foreach ($w in $expected) {
         Write-Host "[FAIL] $label : errorWorkflow is $got, expected $want" -ForegroundColor Red
         $failed++
     }
+    # The other settings from scripts\lib\workflows.ps1 (on the server also ServerSettings): a re-import that drops one fails here.
+    $wrong = @(foreach ($k in $w.Settings.Keys) { $live = if ($wf.settings) { [string]$wf.settings.$k } else { '' }; if ($live -ne [string]$w.Settings[$k]) { "$k is '$live', expected '$($w.Settings[$k])'" } })
+    if ($wrong.Count) { Write-Host "[FAIL] $label : $($wrong -join '; ')" -ForegroundColor Red; $failed++ }
+    else { Write-Host "[PASS] $label : settings $(($w.Settings.Keys | Sort-Object | ForEach-Object { "$_=$($w.Settings[$_])" }) -join ', ')" -ForegroundColor Green }
 }
 
 # Write-Output: e2e reads this line.

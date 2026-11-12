@@ -798,6 +798,64 @@ Times Berlin (CET, UTC+1). `infra/backup-offsite.sh` now also uploads `n8n-<UTC>
 
 **e2e `-Target Server` after the change: 55/55 checks passed, 0 failed**, exit 0 (its offsite backup step now includes `n8n export uploaded in the last 1500 min`).
 
+### Outside probe of the public intake (M7b-7, 12 Nov)
+
+Times Berlin (CET, UTC+1). Closes the automation-review HIGH on M7b-5b (nothing probed the public URL from outside). `.github/workflows/outside-probe.yml` runs `scripts/outside-probe.sh` on GitHub's runners every 15 min: a POST with a fresh timestamp and a signature that cannot match must get `400 {"error":"invalid signature"}`; success pings Healthchecks `m7-public-probe` (period 15 min, grace 45 min, email on; created by the owner), anything else after 3 tries 10 s apart pings `/fail`. The ping URL is the Actions secret `HC_PUBLIC_PROBE_URL` (set by the owner); the public log shows only the status and n8n's `error` field. The job fetches the one script with plain `git` (no third-party action, no token, `permissions: {}`).
+
+**Harmless to the pipeline, `scripts/check-probe-quiet.ps1`** (3 probe-style POSTs through Cloudflare, server counts before and after): 3 x `400 error: invalid signature`, Intake **+3 successful** executions, Intake errors +0, Error Handler +0, Send Alert +0, `stripe_events` +0. The bad signature takes the normal branch `Respond 400 Invalid Signature`, so no failed execution exists to start the Error Handler, and the Monitor alerts only on rows. Seen failing: a WAF-blocked path gives `403` and `Intake +0`, `2 failed`, exit 1. Volume: the probe adds about 96 executions a day to about 1,440 from the Processor and 288 from the Monitor; pruning: see the memory section.
+
+**Locally first:** `DRY_RUN=1` against the real URL -> `would ping (ok)`; against a blocked path -> 3 x 403, `would ping /fail`, exit 1; without `PING_URL` -> exit 1. The first dry run also failed closed by accident: WSL has no `jq`, the error field read as empty, and the probe reported `/fail`; the script now reads the field with `grep`.
+
+**From GitHub** (run 43225700834, a temporary `push` trigger on the branch, because scheduled and dispatched runs need the file on `main`; removed before review):
+
+| Attempt | Log (public) | Healthchecks (owner read-out) |
+|---|---|---|
+| Push run, 14:16:23 (13:16:23 UTC) | `try 1: HTTP 400, error: invalid signature`, `probe ok, pinged` | green, last ping 14:16:23 |
+| cloudflared stopped by the owner at 14:22:25 (13:22:25 UTC); re-run | `try 1..3: HTTP 530` (Cloudflare: origin unreachable), `probe FAILED, reported /fail` at 14:23:34 (13:23:34 UTC), run red | **down**, down email 14:23 |
+| cloudflared started by the owner, running since 14:24:44 (13:24:44 UTC, Docker's `StartedAt`, 0 restarts, 4 tunnel connections); re-run | `try 1: HTTP 400, error: invalid signature`, `probe ok, pinged` at 14:27:08 (13:27:08 UTC) | **green again**, up email 14:27 |
+
+The public URL was down 2 min 19 s. The owner ran both docker commands from their own PowerShell (the permission check refused Claude stopping the public endpoint; from Git Bash's `!`, `server-sh.ps1` first lost its backslash and then used Git Bash's `ssh`, which the server refuses).
+**Limits:** GitHub's schedule can run late or skip slots (hence grace 45 min) and is disabled after 60 days without repository activity; then the check gets no pings and alerts after about 1 h, so a dead probe is not silent. The probe proves the path and the signature check, not that a real, correctly signed event is stored (e2e does that).
+
+### n8n memory, pruning and the stack rules (M7b-7, 12 Nov)
+
+Times UTC. **Config applied by the owner** (one command from their PowerShell: `import-workflows.ps1 -Only <Monitor>`, then `docker compose up -d n8n`): new container started 13:40:06, healthy 13:40:15 (the stop of the old one was not timed). In the container: `EXECUTIONS_DATA_PRUNE=true`, `EXECUTIONS_DATA_MAX_AGE=168`, `EXECUTIONS_DATA_PRUNE_MAX_COUNT=5000`. The Monitor's `saveDataSuccessExecution=none`: `check-error-workflows.ps1 -Target Server` FAILed before (`saveDataSuccessExecution is '', expected 'none'`, the laptop target passing) and passes after.
+
+**`scripts/measure-n8n-memory.ps1`**, `memory.current` of n8n's cgroup once a second, limit 1536 MB:
+
+| Phase | Samples | Peak | of limit | oom_kill |
+|---|---|---|---|---|
+| idle 30 min, 13:42-14:12 | 1,798 | 479 MB | 31.2% | 0 -> 0 |
+| 10 sandbox payments with PDF, 14:12-14:14, all 10 invoiced | 129 | 553 MB | 36.0% | 0 -> 0 |
+| exports (check-error-workflows, check-sdk-drift, backup), from 14:14 | 128 | 743 MB so far | 48% | not read |
+| overlap (an export during a payment) | - | not run | - | - |
+| earlier today: one backup run (3 export processes), 12:33 | 41 | 775 MB | 50% | 0 -> 0 |
+
+**Not finished:** the laptop ran low on memory and Claude Code stopped the measuring script during the exports phase; per its notice it was not restarted automatically. The server-side sampler kept running and was stopped by hand (its two `/dev/shm` files removed). Every peak measured is below the 75% threshold (1152 MB), so neither the limit nor V8 was changed. Seen failing: `-Phases idle -IdleMinutes 1 -MaxPercent 10` -> `peak 516 MB of 1536 MB (33.6%)`, `1 failed`, exit 1.
+
+**The Monitor still runs, and what `none` leaves behind.** n8n's event log (`n8nEventLog*.log`) shows a Monitor `workflow.success` every 5 min from 13:45:25, `Heartbeat Ping` finished each time. The log writes Berlin time (`...T14:40:22+01:00` for the 13:40:22 UTC start); read as UTC it first looked like an hour without Monitor runs, which was wrong. In SQLite each unsaved success briefly stays as a row with `status=running`, `stoppedAt` NULL and **`deletedAt` set** (a soft delete; the UI hides it), and the pruning pass hard-deletes it: rows 401 and 447 (14:10:25, 14:15:25) were present at 14:24:25 and gone at 14:25:27; the five runs from 13:45 to 14:05 were already gone by 14:17. Rows with `status=running` and `deletedAt` NULL: 0. Side quirk: `deletedAt` is written one hour BEFORE the run (13:10:25 for 14:10:25), an n8n time zone slip; it only makes the rows eligible sooner. A raw SQL count of `running` executions must filter `deletedAt IS NULL`.
+
+**`check-prod-stack.ps1`, new rules:** no container `OOMKilled` or with an `oom_kill` in its cgroup, no restart by the restart policy, memory used at least 22% (30.0% of 3,895 MB, MemTotal - MemAvailable), sum of running `mem_limit` at most 75% of RAM (2,816 MB = 72.3%). Live: 0 failed, also after the n8n recreate. Seen failing: `-MinUsedPercent 99 -MaxLimitPercent 10` -> both FAIL, `2 failed`, exit 1. **OOM:** the owner ran a throwaway `m7-oom-test` (`alpine:3.20`, `-m 64m --memory-swap 64m`, a shell doubling a string): `exit=137`, `OOMKilled=true`; the check then gave `[FAIL] no container OOM-killed - m7-oom-test OOMKilled=true oom_kill=na`, `1 failed`, exit 1; after the owner's `docker rm m7-oom-test`: 0 failed (memory used 31.4%). **Not provoked:** a process OOM-killed inside a container that keeps running (the cgroup `oom_kill` path); the stopped test container has no cgroup any more (`na`), so its `OOMKilled` flag is what was caught. The `alpine:3.20` image stays on the server (about 8 MB).
+
+**e2e defaults to the server:** `scripts\e2e.ps1` with no `-Target`: `== 1. Preflight (Server) ==`, **55/55 checks passed, 0 failed**; after the review fixes below **57/57** (the two new http-reason steps; the stub run `exit 1, 6 failed`).
+
+**automation-review (2026-11-12): SHIP**, no CRITICAL or HIGH. Three MEDIUM, fixed in the PR: (1) the memory sampler had no lifetime, so a killed run left it writing to the server's RAM (it happened); now `timeout 7200` and a stale pidfile is cleared (proven: a pidfile with a dead pid, then a 1-minute run measured normally, nothing left); (2) `http-reason.ps1` had no regression test: `scripts/lib/http-reason.test.ps1` in e2e (6 cases with a documentation-range IP; `-ProveFailure` against a stub that returns the body fails all 6; its own failure lines print lengths only); (3) the runbook says how to clear `OOMKilled`/`RestartCount` after triage (recreate the container). Open, documented: the cgroup `oom_kill` path unprovoked; the exports and overlap memory phases unfinished; the probe proves the path and the signature check, not storage (e2e does that).
+
+### Raw response body printed (M7b-7, 12 Nov)
+
+**What happened.** The first version of `scripts/check-probe-quiet.ps1` printed a non-JSON response body in its failure detail. Its fail-once run (a WAF-blocked path) got Cloudflare's 403 block page, and that page contains the caller's public IP, so the owner's home IP (`<home-ip>`) was printed into the Claude session's output. The session transcript is local; nothing was committed, pushed or posted. The owner spotted it and asked for the fix below; it broke the rule "never print a public IP" (CLAUDE.md).
+
+**Fix: no script prints a raw response body.** `scripts/lib/http-reason.ps1` (`Get-HttpReason`) is the one way to describe a body: the Intake's short JSON fields (`error`, `received`, `duplicate`, each cut to 60 characters), otherwise only `<non-JSON body, N characters>`. Audit of every script that makes an HTTP call (12 files):
+- `check-probe-quiet.ps1`: the cause; uses the helper.
+- `check-tunnel-allowlist.ps1`: its bad-signature control printed the body, and that request goes through Cloudflare, so a WAF block would have printed the IP the same way: uses the helper.
+- `send-signed-event.ps1`: printed n8n's raw reply (through the SSH tunnel, not Cloudflare): now status and reason.
+- `check-public-ports.ps1`: printed `-SourceIp` (the home IP, passed by the owner) on PASS. Not a body, the same leak: now `same` / `differs`.
+- The rest print status codes, counts or `jq`-reduced fields only (`check-stale-timestamp`, `e2e`, `check-imds-blocked`, `check-server-base`, `check-invoice-delivery`, `check-offsite-restore`, `lib/target.ps1`). `scripts/outside-probe.sh` (public Actions log) prints only the status and n8n's `error` field.
+
+**Proof.** `Get-HttpReason` on 8 sample bodies (empty, an HTML page holding a documentation-range IP, n8n's replies, other JSON, a 200-character value, an array): no IP and no HTML in any output. Live: the blocked path now prints `403 <non-JSON body, 4575 characters>` (still `2 failed`, exit 1); `check-probe-quiet.ps1` 0 failed; `check-tunnel-allowlist.ps1 -ExpectWaf` 0 failed, control `400 error: invalid signature`.
+
+**The IP is in no repo file or commit.** The current IPv4 (fetched with `curl -4`, never printed), dotted and dashed, searched in: the working tree including untracked files, every file at each of 112 commits on all refs, all commit messages, the titles, bodies, comments and review comments of all 22 PRs. **0 hits everywhere.** Positive controls with the same code: the hostname in 12 files and 116 file-at-commit hits, `M7b-6` in 5 commit messages, `Generated with` in the PR text, so each search can find. `check-docs.ps1` also fails on any public IPv4 in tracked files.
+
 ## Safety guards
 
 Recorded 2026-11-03. One pattern list, `scripts/lib/destructive-patterns.json` (10 patterns, each with a harmless `echo` sample), read by the helper guard (`scripts/lib/destructive-guard.ps1`, in `wsl-sh.ps1` and `server-sh.ps1`) and the PreToolUse hook (`scripts/hooks/destructive-guard.mjs`).
