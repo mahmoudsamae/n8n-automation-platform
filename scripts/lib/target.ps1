@@ -69,6 +69,29 @@ function Invoke-TargetSql($Target, [string]$Sql) {
     return (@($out) | ForEach-Object { "$_".Trim() } | Where-Object { $_ }) -join "`n"
 }
 
+# Intake executions in n8n's SQLite (read-only), for proving that a resend really reached the Intake.
+# Returns @{ LastId = newest Intake execution id; Matching = Intake executions with id > $AfterId whose saved data contains $EventId }.
+# Counting by event id, not all runs: any other request in the same window (another event, a scan of the public URL) would count too
+# (review finding on PR #19). The id is checked here and bound as a SQL parameter, never pasted into the query.
+function Get-IntakeExecutions($Target, [string]$EventId, [int]$AfterId = 0) {
+    if ($EventId -notmatch '^evt_[A-Za-z0-9_]+$') { throw 'unexpected event id format' }
+    $sh = @'
+docker exec -i n8n node - __EVENT__ __AFTER__ <<'JS'
+const { DatabaseSync } = require('node:sqlite');
+const db = new DatabaseSync('/home/node/.n8n/database.sqlite', { readOnly: true });
+const [eventId, after] = process.argv.slice(-2);
+const wf = '3j0pWVoxvDY2sdO5';
+const last = db.prepare('select coalesce(max(id), 0) m from execution_entity where workflowId = ?').get(wf).m;
+const n = db.prepare('select count(*) c from execution_entity e join execution_data d on d.executionId = e.id where e.workflowId = ? and e.id > ? and instr(d.data, ?) > 0').get(wf, Number(after), eventId).c;
+console.log('intake=' + last + ',' + n);
+JS
+'@
+    $line = @(Invoke-TargetSh $Target $sh.Replace('__EVENT__', $EventId).Replace('__AFTER__', "$AfterId") | Where-Object { "$_" -match '^intake=\d+,\d+$' })
+    if ($line.Count -ne 1) { throw 'could not read Intake executions' }
+    $last, $n = "$($line[0])".Substring(7) -split ','
+    return @{ LastId = [int]$last; Matching = [int]$n }
+}
+
 function Test-LocalPort([int]$Port) {
     $c = New-Object Net.Sockets.TcpClient
     try { $c.Connect('127.0.0.1', $Port); return $true } catch { return $false } finally { $c.Dispose() }
