@@ -23,7 +23,8 @@ services:
       # from .env (owner uid 1000, mode 400). Without an explicit key n8n would generate one inside its volume.
       - N8N_ENCRYPTION_KEY_FILE=/run/secrets/n8n_encryption_key
       # Public through cloudflared since M7b-5b. cloudflared is exactly one proxy hop, so n8n takes the client IP from X-Forwarded-For.
-      - WEBHOOK_URL=https://invoice.mahmud-alhussen.de/
+      # N8N_WEBHOOK_URL, not WEBHOOK_URL: 2.45.6 logs the old name as deprecated at start.
+      - N8N_WEBHOOK_URL=https://invoice.mahmud-alhussen.de/
       - N8N_PROXY_HOPS=1
       - N8N_PUBLIC_API_DISABLED=true
     secrets:
