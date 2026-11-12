@@ -1,4 +1,5 @@
-# End-to-end check for the Stripe -> n8n pipeline. Run: powershell -File scripts\e2e.ps1 [-Target Laptop|Server] [-PreflightOnly]
+# End-to-end check for the Stripe -> n8n pipeline. Run: powershell -File scripts\e2e.ps1 [-Target Server|Laptop] [-PreflightOnly]
+# The default is the server since M7b-7 (the laptop stack is retired); -Target Laptop still works while that stack runs.
 # Non-destructive: stops no services and deletes no real data (its only deletes are its own evt_test_e2e_stale_* rows, via clean-test-event.ps1).
 # Never prints stripe listen output (it holds the signing secret).
 # -Target Server (M7b-4): runs against the M7 server over Tailscale. e2e opens its own SSH tunnel (n8n on 25678, Mailpit on 28025) and
@@ -6,7 +7,7 @@
 # Stripe delivers it to https://invoice.mahmud-alhussen.de. The fake-signature and stale-timestamp requests go to that public URL.
 # The backup checks become the server's (offsite backup journal, stack rules). Everything that differs lives in scripts\lib\target.ps1.
 param(
-    [ValidateSet('Laptop', 'Server')][string]$Target = 'Laptop',
+    [ValidateSet('Laptop', 'Server')][string]$Target = 'Server',
     [switch]$PreflightOnly
 )
 $ErrorActionPreference = 'Stop'

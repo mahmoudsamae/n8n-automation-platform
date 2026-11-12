@@ -43,6 +43,7 @@ try {
         $out = @(& node (Join-Path $tool 'apply-ids.mjs') $IdMap $compiled $mapped 2>&1)
         if ($LASTEXITCODE -ne 0) { $out | Select-Object -First 3 | ForEach-Object { Write-Host "        $_" }; throw "$($w.File): ids cannot be mapped" }
         $settings = @{} + $w.Settings
+if ($w.ServerSettings) { $settings += $w.ServerSettings }
         if ($w.ErrorHandler) { $settings.errorWorkflow = $ErrorHandlerWorkflowId }
         $settingsFile = Join-Path $tmp "$($w.Id).settings.json"
         [IO.File]::WriteAllText($settingsFile, ($settings | ConvertTo-Json -Compress), (New-Object Text.UTF8Encoding($false)))
