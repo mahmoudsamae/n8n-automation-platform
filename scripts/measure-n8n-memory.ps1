@@ -30,10 +30,14 @@ function Invoke-Server([string]$Sh) {
 $cgSh = 'cg="/sys/fs/cgroup/system.slice/docker-$(docker inspect -f "{{.Id}}" n8n).scope"; [ -r "$cg/memory.current" ] || { echo "nocg=1"; exit 1; }'
 $startSh = $cgSh + @'
 
-[ -e /dev/shm/n8n-mem.pid ] && { echo "busy=1"; exit 1; }
+# A sampler left by a run that died (seen 2026-11-12: the laptop side was killed) ends itself after 2 h; its stale pidfile is cleared here.
+if [ -e /dev/shm/n8n-mem.pid ]; then
+  if kill -0 "$(cat /dev/shm/n8n-mem.pid)" 2>/dev/null; then echo "busy=1"; exit 1; fi
+  rm -f /dev/shm/n8n-mem.pid /dev/shm/n8n-mem.samples
+fi
 echo "limit=$(cat $cg/memory.max)"
 echo "oom=$(awk '$1=="oom_kill"{print $2}' $cg/memory.events)"
-nohup sh -c "while :; do cat $cg/memory.current; sleep 1; done" > /dev/shm/n8n-mem.samples 2>/dev/null &
+nohup timeout 7200 sh -c "while :; do cat $cg/memory.current; sleep 1; done" > /dev/shm/n8n-mem.samples 2>/dev/null &
 echo $! > /dev/shm/n8n-mem.pid
 '@
 $stopSh = $cgSh + @'

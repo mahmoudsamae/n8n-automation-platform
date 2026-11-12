@@ -169,6 +169,12 @@ try {
     & "$PSScriptRoot\check-docs.ps1"
     Write-Step 'docs: CLAUDE.md within its line limit, no broken relative links, no public IP' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
 
+    # No script prints a raw HTTP response body (M7b-7: one printed the home IP from Cloudflare's block page). The stub run must fail.
+    $null = Invoke-Check 'http-reason: no body text or IP leaves Get-HttpReason' { & "$PSScriptRoot\lib\http-reason.test.ps1" }
+    $stubOut = @(& "$PSScriptRoot\lib\http-reason.test.ps1" -ProveFailure 6>$null)
+    $stubCode = $LASTEXITCODE
+    Write-Step 'http-reason test fails against a stub that returns the body' ($stubCode -eq 1 -and @($stubOut | Where-Object { "$_" -match '^[1-9]\d* failed$' }).Count -eq 1) "exit $stubCode, $(@($stubOut | Where-Object { "$_" -match ' failed$' }) -join '')"
+
     # Safety guards: the hook blocks destructive text sent to an executor, and wsl-sh.ps1 refuses it before sending (samples only echo).
     $null = & node "$PSScriptRoot\hooks\destructive-guard.test.mjs"
     Write-Step 'destructive-guard hook: every pattern blocked, controls allowed' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
