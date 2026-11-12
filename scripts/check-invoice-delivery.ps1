@@ -12,9 +12,14 @@ param(
     [int]$ExpectedAttachments = 1,
     [string]$SubjectPrefix = 'Ihre Rechnung ',
     [bool]$ExpectTelegramDocument = $true,
-    [string]$MailpitUrl = 'http://localhost:8025'
+    # Server: Mailpit through e2e's SSH tunnel (local 28025), so run it from e2e -Target Server, or pass -MailpitUrl for your own tunnel.
+    [ValidateSet('Laptop', 'Server')][string]$Target = 'Laptop',
+    [string]$MailpitUrl = ''
 )
 $ErrorActionPreference = 'Stop'
+. "$PSScriptRoot\lib\target.ps1"
+$T = Get-Target $Target
+if (-not $MailpitUrl) { $MailpitUrl = $T.MailpitUrl }
 $failed = 0
 function Write-Check([string]$Name, [bool]$Ok, [string]$Detail = '') {
     if (-not $Ok) { $script:failed++ }
@@ -23,7 +28,7 @@ function Write-Check([string]$Name, [bool]$Ok, [string]$Detail = '') {
 }
 function Invoke-Psql([string]$Sql) {
     $script = 'docker exec postgres psql -U automation -d automation -tAc "' + $Sql + '"'
-    return (@(@(& "$PSScriptRoot\wsl-sh.ps1" -Script $script) | ForEach-Object { "$_".Trim() } | Where-Object { $_ }) -join '|')
+    return (@(@(Invoke-TargetSh $T $script) | ForEach-Object { "$_".Trim() } | Where-Object { $_ }) -join '|')
 }
 function Read-Utf8Json([string]$Url) {
     # Invoke-RestMethod in Windows PowerShell 5.1 can mis-decode UTF-8 JSON, so decode the bytes explicitly.

@@ -6,7 +6,11 @@
 # exactly one row with every column set; telegram_send_pdf is exactly true or false; the crypto credential exists.
 # Data tables and credentials are read from n8n's SQLite file, read-only, inside the container.
 # Prove it can fail: N8N_BLOCK_ENV_ACCESS_IN_NODE=false docker compose up -d --no-deps n8n (then run it, expect FAIL), or empty one cell of stripe_config.
+# -Target Server runs the same checks inside the server's n8n container (table ids are read there, so no id map is needed).
+param([ValidateSet('Laptop', 'Server')][string]$Target = 'Laptop')
 $ErrorActionPreference = 'Stop'
+. "$PSScriptRoot\lib\target.ps1"
+$T = Get-Target $Target
 $failed = 0
 function Write-Step([string]$Name, [bool]$Ok, [string]$Detail = '') {
     if ($Ok) { Write-Host "[PASS] $Name" -ForegroundColor Green -NoNewline } else { Write-Host "[FAIL] $Name" -ForegroundColor Red -NoNewline; $script:failed++ }
@@ -56,8 +60,8 @@ const cred = db.prepare("select count(*) as n from credentials_entity where name
 console.log('crypto_credential=' + cred.n);
 JS
 '@
-$out = @(& "$PSScriptRoot\wsl-sh.ps1" -Script $sh)
-if ($LASTEXITCODE -ne 0) { Write-Step 'n8n container reachable' $false "exit $LASTEXITCODE"; Write-Host '1 failed'; exit 1 }
+$out = @(Invoke-TargetSh $T $sh)
+if ($LASTEXITCODE -ne 0) { Write-Step 'n8n container reachable' $false "exit $LASTEXITCODE"; Write-Output '1 failed'; exit 1 }
 function Get-Values([string]$Key) { @($out | Where-Object { "$_" -like "$Key=*" } | ForEach-Object { "$_".Substring($Key.Length + 1).Trim() }) }
 function Get-One([string]$Key) { $v = @(Get-Values $Key); if ($v.Count) { $v[0] } else { '' } }
 

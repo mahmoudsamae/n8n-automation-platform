@@ -46,7 +46,7 @@ if [ "$(login "wrong-$(date +%s)")" = "n8n_app" ]; then echo "tcp_wrong_refused=
 '@
 $out = @(& "$PSScriptRoot\server-sh.ps1" -Script $sh)
 # Before migration 007 the role does not exist and the catalog query stops with an error: that is a FAIL too.
-if ($LASTEXITCODE -ne 0) { Write-Step 'server reachable and catalog query ran (does role n8n_app exist?)' $false "exit $LASTEXITCODE"; Write-Host '1 failed'; exit 1 }
+if ($LASTEXITCODE -ne 0) { Write-Step 'server reachable and catalog query ran (does role n8n_app exist?)' $false "exit $LASTEXITCODE"; Write-Output '1 failed'; exit 1 }
 function Get-Values([string]$Key) { @($out | Where-Object { "$_" -like "$Key=*" } | ForEach-Object { "$_".Substring($Key.Length + 1).Trim() }) }
 function Get-One([string]$Key) { $v = @(Get-Values $Key); if ($v.Count) { $v[0] } else { '' } }
 
@@ -76,6 +76,7 @@ Write-Step 'N8N_DB_PASSWORD set in the server .env' ((Get-One 'envpw') -eq 'set'
 Write-Step 'n8n_app logs in over TCP from another container with the .env password' ((Get-One 'tcp_login') -eq 'yes') (Get-One 'tcp_login')
 Write-Step 'a wrong password is refused over TCP' ((Get-One 'tcp_wrong_refused') -eq 'yes') (Get-One 'tcp_wrong_refused')
 
-Write-Host ("{0} failed" -f $failed)
+# Write-Output, not Write-Host: e2e -Target Server runs this in-process and reads the line from the pipeline (M7b-4 finding).
+Write-Output ("{0} failed" -f $failed)
 if ($failed -gt 0) { exit 1 }
 exit 0

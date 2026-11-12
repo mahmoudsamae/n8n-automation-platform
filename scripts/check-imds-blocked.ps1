@@ -43,6 +43,7 @@ Write-Step 'control: n8n reaches https://api.telegram.org' ($r['n8n_https'] -eq 
 Write-Step 'M7-IMDS chain hooked into DOCKER-USER' ($r['hook'] -eq 'yes') $r['hook']
 Write-Step 'docker-imds-block.service enabled' ($r['unit_enabled'] -eq 'enabled') $r['unit_enabled']
 
-Write-Host ("{0} failed" -f $failed)
+# Write-Output, not Write-Host: e2e -Target Server runs this in-process and reads the line from the pipeline (M7b-4 finding).
+Write-Output ("{0} failed" -f $failed)
 if ($failed -gt 0) { exit 1 }
 exit 0

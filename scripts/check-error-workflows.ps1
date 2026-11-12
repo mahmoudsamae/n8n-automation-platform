@@ -3,10 +3,13 @@
 # Intake, Processor and Monitor must point at the Error Handler; the Error Handler and Send Alert must have none
 # (a failing alert must never trigger another alert). The two invoice sub-workflows (Render Invoice, Send Telegram) have none either:
 # they return their problems to the Processor, which reports the failure, so a second alert for the same thing would only be noise.
-# Run: powershell -File scripts\check-error-workflows.ps1 [-ErrorHandlerId <id>]   Exit 0 = all correct, 1 = problem.
+# Run: powershell -File scripts\check-error-workflows.ps1 [-ErrorHandlerId <id>] [-Target Laptop|Server]   Exit 0 = all correct, 1 = problem.
 # Prints names and ids only. -ErrorHandlerId lets you prove the failure path without editing a live workflow.
-param([string]$ErrorHandlerId = 'c2NT8k3JGpuS3r6I')
+# Workflow ids are the same on the server (import:workflow keeps them), so the list below serves both targets.
+param([string]$ErrorHandlerId = 'c2NT8k3JGpuS3r6I', [ValidateSet('Laptop', 'Server')][string]$Target = 'Laptop')
 $ErrorActionPreference = 'Stop'
+. "$PSScriptRoot\lib\target.ps1"
+$T = Get-Target $Target
 
 # id, expected name, expected errorWorkflow ('' = must have none)
 $expected = @(
@@ -23,7 +26,7 @@ $failed = 0
 foreach ($w in $expected) {
     $label = "{0} ({1})" -f $w.Name, $w.Id
     # The CLI can print warnings before the JSON array, so cut at the first '['.
-    $raw = (@(wsl -d Ubuntu docker exec n8n n8n export:workflow "--id=$($w.Id)" 2>$null) -join "`n")
+    $raw = (@(Invoke-TargetSh $T "docker exec n8n n8n export:workflow --id=$($w.Id) 2>/dev/null") -join "`n")
     $start = $raw.IndexOf('[')
     $wf = $null
     if ($start -ge 0) { try { $wf = @($raw.Substring($start) | ConvertFrom-Json)[0] } catch { $wf = $null } }
@@ -42,5 +45,7 @@ foreach ($w in $expected) {
     }
 }
 
+# Write-Output: e2e reads this line.
+Write-Output ("{0} failed" -f $failed)
 if ($failed -gt 0) { exit 1 }
 exit 0
