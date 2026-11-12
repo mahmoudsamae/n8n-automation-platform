@@ -1,6 +1,6 @@
 # M7b: stack and tunnel (spec)
 
-Status: plan approved by the owner on 2026-11-08. Built PR by PR; each PR updates this file's status line. M7b-1 merged (PR #16). M7b-2 merged (PR #17). M7b-3 built and proven 2026-11-09, applied on the server, exposed ping URLs rotated 2026-11-11 (PR #18). M7b-4 merged (PR #19). M7b-5a merged (PR #20). M7b-5b merged (PR #21). M7b-6 built 2026-11-12 (n8n export in the offsite backup, restore drill 15/15; PR open). The server uses its own Stripe sandbox "New business sandbox" (owner decision 2026-11-11). M7b-5 is built as 5a (server n8n, still private) and 5b (tunnel, WAF, Stripe: goes public). Design background: `docs/tasks/m7-server.md`.
+Status: plan approved by the owner on 2026-11-08. Built PR by PR; each PR updates this file's status line. M7b-1 merged (PR #16). M7b-2 merged (PR #17). M7b-3 built and proven 2026-11-09, applied on the server, exposed ping URLs rotated 2026-11-11 (PR #18). M7b-4 merged (PR #19). M7b-5a merged (PR #20). M7b-5b merged (PR #21). M7b-6 merged (PR #22). M7b-7 built 2026-11-12 (outside probe, memory, stack rules, e2e default Server; PR open). The server uses its own Stripe sandbox "New business sandbox" (owner decision 2026-11-11). M7b-5 is built as 5a (server n8n, still private) and 5b (tunnel, WAF, Stripe: goes public). Design background: `docs/tasks/m7-server.md`.
 
 ## Goal
 
@@ -93,3 +93,4 @@ Every new check is seen failing once and then passing, and the runner's summary 
 - e2e defaults to the server; CLAUDE.md updated; the laptop stack is stopped by the owner.
 - `automation-review` SHIP.
 - After 26 Nov: the rebuild drill to "e2e green", whose number goes in the README.
+- As built: the probe runs on GitHub Actions every 15 min (owner decision 2026-11-12), check period 15 / grace 45; `scripts/check-probe-quiet.ps1` proves a probe stores nothing and alerts nobody. Memory is sampled from `memory.current` once a second (the 24.04 kernel cannot reset `memory.peak`). The Monitor's `saveDataSuccessExecution: none` is a server-only setting in `scripts/lib/workflows.ps1`, checked by `check-error-workflows.ps1`. The probe's fail-once stopped cloudflared for 2 min 19 s (owner ran the commands).
