@@ -798,6 +798,21 @@ Times Berlin (CET, UTC+1). `infra/backup-offsite.sh` now also uploads `n8n-<UTC>
 
 **e2e `-Target Server` after the change: 55/55 checks passed, 0 failed**, exit 0 (its offsite backup step now includes `n8n export uploaded in the last 1500 min`).
 
+### Raw response body printed (M7b-7, 12 Nov)
+
+**What happened.** The first version of `scripts/check-probe-quiet.ps1` printed a non-JSON response body in its failure detail. Its fail-once run (a WAF-blocked path) got Cloudflare's 403 block page, and that page contains the caller's public IP, so the owner's home IP (`<home-ip>`) was printed into the Claude session's output. The session transcript is local; nothing was committed, pushed or posted. The owner spotted it and asked for the fix below; it broke the rule "never print a public IP" (CLAUDE.md).
+
+**Fix: no script prints a raw response body.** `scripts/lib/http-reason.ps1` (`Get-HttpReason`) is the one way to describe a body: the Intake's short JSON fields (`error`, `received`, `duplicate`, each cut to 60 characters), otherwise only `<non-JSON body, N characters>`. Audit of every script that makes an HTTP call (12 files):
+- `check-probe-quiet.ps1`: the cause; uses the helper.
+- `check-tunnel-allowlist.ps1`: its bad-signature control printed the body, and that request goes through Cloudflare, so a WAF block would have printed the IP the same way: uses the helper.
+- `send-signed-event.ps1`: printed n8n's raw reply (through the SSH tunnel, not Cloudflare): now status and reason.
+- `check-public-ports.ps1`: printed `-SourceIp` (the home IP, passed by the owner) on PASS. Not a body, the same leak: now `same` / `differs`.
+- The rest print status codes, counts or `jq`-reduced fields only (`check-stale-timestamp`, `e2e`, `check-imds-blocked`, `check-server-base`, `check-invoice-delivery`, `check-offsite-restore`, `lib/target.ps1`). `scripts/outside-probe.sh` (public Actions log) prints only the status and n8n's `error` field.
+
+**Proof.** `Get-HttpReason` on 8 sample bodies (empty, an HTML page holding a documentation-range IP, n8n's replies, other JSON, a 200-character value, an array): no IP and no HTML in any output. Live: the blocked path now prints `403 <non-JSON body, 4575 characters>` (still `2 failed`, exit 1); `check-probe-quiet.ps1` 0 failed; `check-tunnel-allowlist.ps1 -ExpectWaf` 0 failed, control `400 error: invalid signature`.
+
+**The IP is in no repo file or commit.** The current IPv4 (fetched with `curl -4`, never printed), dotted and dashed, searched in: the working tree including untracked files, every file at each of 112 commits on all refs, all commit messages, the titles, bodies, comments and review comments of all 22 PRs. **0 hits everywhere.** Positive controls with the same code: the hostname in 12 files and 116 file-at-commit hits, `M7b-6` in 5 commit messages, `Generated with` in the PR text, so each search can find. `check-docs.ps1` also fails on any public IPv4 in tracked files.
+
 ## Safety guards
 
 Recorded 2026-11-03. One pattern list, `scripts/lib/destructive-patterns.json` (10 patterns, each with a harmless `echo` sample), read by the helper guard (`scripts/lib/destructive-guard.ps1`, in `wsl-sh.ps1` and `server-sh.ps1`) and the PreToolUse hook (`scripts/hooks/destructive-guard.mjs`).

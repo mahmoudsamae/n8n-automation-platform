@@ -14,6 +14,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot\lib\target.ps1"
+. "$PSScriptRoot\lib\http-reason.ps1"
 $T = Get-Target $Target
 
 if (($BodyFile -and $TestId) -or (-not $BodyFile -and -not $TestId)) { throw 'give exactly one of: -BodyFile, -TestId' }
@@ -46,13 +47,13 @@ try {
     $url = "$($T.N8nUrl)/webhook/stripe-intake"
     try {
         $r = Invoke-WebRequest -Uri $url -Method Post -UseBasicParsing -ContentType 'application/json' -Headers @{ 'Stripe-Signature' = "t=$ts,v1=$($sig[0])" } -Body $bodyBytes -TimeoutSec 30
-        Write-Output "status=$([int]$r.StatusCode)"
-        Write-Output $r.Content
+        # Status and a short reason only, never the body (scripts\lib\http-reason.ps1).
+        Write-Output "status=$([int]$r.StatusCode) $(Get-HttpReason $r.Content)"
     } catch {
         if (-not $_.Exception.Response) { throw }
         $resp = $_.Exception.Response
-        Write-Output "status=$([int]$resp.StatusCode)"
-        try { Write-Output (New-Object IO.StreamReader($resp.GetResponseStream())).ReadToEnd() } catch { }
+        $text = try { (New-Object IO.StreamReader($resp.GetResponseStream())).ReadToEnd() } catch { '' }
+        Write-Output "status=$([int]$resp.StatusCode) $(Get-HttpReason $text)"
     }
 } finally {
     Close-TargetTunnel $tunnel

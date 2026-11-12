@@ -1,0 +1,27 @@
+# Outside probe of https://invoice.mahmud-alhussen.de (M7b-7): see scripts/outside-probe.sh. Healthchecks check m7-public-probe
+# (period 15 min, grace 45 min: GitHub's schedule can run late or skip a slot under load).
+name: outside-probe
+on:
+  schedule:
+    - cron: '7,22,37,52 * * * *'   # every 15 min, off the full hour when GitHub's schedule is busiest
+  workflow_dispatch:
+  push:   # TEMPORARY for the M7b-7 proofs before merge (schedule and dispatch need the file on main); removed before review
+    branches: [m7b-7-memory-probe]
+permissions: {}
+concurrency:
+  group: outside-probe
+  cancel-in-progress: false
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      # Plain git instead of a third-party action (no external code, no token): the one script, at exactly this commit.
+      - name: Fetch the probe script
+        run: |
+          git init -q . && git fetch -q --depth 1 "https://github.com/${GITHUB_REPOSITORY}.git" "$GITHUB_SHA"
+          git checkout -q FETCH_HEAD -- scripts/outside-probe.sh
+      - name: Probe the public intake
+        env:
+          PING_URL: ${{ secrets.HC_PUBLIC_PROBE_URL }}
+        run: bash scripts/outside-probe.sh

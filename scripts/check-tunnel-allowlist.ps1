@@ -17,6 +17,7 @@ param(
     [switch]$ExpectWaf
 )
 $ErrorActionPreference = 'Stop'
+. "$PSScriptRoot\lib\http-reason.ps1"
 $failed = 0
 function Write-Step([string]$Name, [bool]$Ok, [string]$Detail = '') {
     if ($Ok) { Write-Host "[PASS] $Name" -ForegroundColor Green -NoNewline } else { Write-Host "[FAIL] $Name" -ForegroundColor Red -NoNewline; $script:failed++ }
@@ -69,7 +70,7 @@ try {
     }
     # The control: the allowed request still reaches the Intake, which refuses the signature. A stale t= is fine, the signature fails first.
     $r = Invoke-Probe 'POST' '/webhook/stripe-intake' @('Stripe-Signature: t=1,v1=00')
-    Write-Step 'POST /webhook/stripe-intake with a bad signature reaches the Intake and gets 400' ($r.Code -eq '400' -and $r.Body -match 'invalid signature') "$($r.Code) $($r.Body)"
+    Write-Step 'POST /webhook/stripe-intake with a bad signature reaches the Intake and gets 400' ($r.Code -eq '400' -and $r.Body -match 'invalid signature') "$($r.Code) $(Get-HttpReason $r.Body)"
 } finally {
     Remove-Item -LiteralPath $bodyFile -ErrorAction SilentlyContinue
 }
