@@ -8,9 +8,12 @@
 param(
     [Parameter(Mandatory = $true)][string]$EventId,
     [Parameter(Mandatory = $true)][string]$Reason,
-    [switch]$DryRun
+    [switch]$DryRun,
+    [ValidateSet('Laptop', 'Server')][string]$Target = 'Laptop'
 )
 $ErrorActionPreference = 'Stop'
+. "$PSScriptRoot\lib\target.ps1"
+$T = Get-Target $Target
 
 if ($EventId -cnotmatch '^evt_[A-Za-z0-9_]+\z') {
     Write-Host 'REFUSED: -EventId must match ^evt_[A-Za-z0-9_]+$' -ForegroundColor Red
@@ -29,7 +32,14 @@ $reasonB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($reasonTex
 
 # SQL goes in on stdin; the only command-line values are the validated id and the base64 reason (both shell-safe characters).
 function Invoke-Psql([string]$Sql, [string[]]$Flags = @('-tA', '-q')) {
-    $out = $Sql | wsl -d Ubuntu docker exec -i postgres psql -U automation -d automation -v ON_ERROR_STOP=1 @Flags -v "eid=$EventId" -v "reason_b64=$reasonB64"
+    if ($Target -eq 'Laptop') {
+        $out = $Sql | wsl -d Ubuntu docker exec -i postgres psql -U automation -d automation -v ON_ERROR_STOP=1 @Flags -v "eid=$EventId" -v "reason_b64=$reasonB64"
+    } else {
+        # Same values, inside single quotes in bash (both are validated above to shell-safe characters), SQL in a quoted heredoc.
+        if ($Sql -match '(?m)^REPLAY_SQL$') { throw 'SQL contains the heredoc delimiter' }
+        $sh = "docker exec -i postgres psql -U automation -d automation -v ON_ERROR_STOP=1 $($Flags -join ' ') -v 'eid=$EventId' -v 'reason_b64=$reasonB64' <<'REPLAY_SQL'`n$Sql`nREPLAY_SQL"
+        $out = Invoke-TargetSh $T $sh
+    }
     if ($LASTEXITCODE -ne 0) { throw "psql failed (exit $LASTEXITCODE)" }
     return (@($out) | ForEach-Object { "$_".TrimEnd() } | Where-Object { $_ }) -join "`n"
 }

@@ -1,6 +1,9 @@
 # Fires ONE Stripe sandbox demo payment: 30,00 EUR for "Workshop: Automatisierung mit n8n", quantity 1. Needs `stripe listen` running to reach Intake
 # (scripts\e2e.ps1 starts its own). The customer is the CLI fixture's ("Jenny Rosen", paying by Visa).
-#   powershell -File scripts\demo-payment.ps1 [-Tag e2e]        -Tag adds the Stripe metadata <tag>=true to the checkout session
+#   powershell -File scripts\demo-payment.ps1 [-Tag e2e] [-Target Laptop|Server]   -Tag adds the Stripe metadata <tag>=true to the checkout session
+# -Target picks the Stripe CLI profile (Laptop: default = "Automation sandbox", reached through stripe listen; Server: m7-server =
+# "New business sandbox", delivered by Stripe to the server's endpoint). Before firing, it checks that the profile really points at that
+# sandbox: `stripe login --project-name X` silently makes X the CLI's current profile (seen in M7b-4). -ExpectAccount overrides the name (fail test).
 # Exit codes: 0 fired, 1 failed (the reason is printed).
 #
 # The overrides (stripe CLI 1.55, fixture checkout.session.completed; found by trying, the CLI help does not list them):
@@ -14,9 +17,19 @@
 # Only that error is retried; anything else fails at once.
 param(
     [ValidatePattern('^[a-z0-9_]{1,40}$')][string]$Tag = '',
-    [ValidateRange(1, 5)][int]$Tries = 3
+    [ValidateRange(1, 5)][int]$Tries = 3,
+    [ValidateSet('Laptop', 'Server')][string]$Target = 'Laptop',
+    [string]$ExpectAccount = ''
 )
 $ErrorActionPreference = 'Stop'
+. "$PSScriptRoot\lib\target.ps1"
+$T = Get-Target $Target
+if (-not $ExpectAccount) { $ExpectAccount = $T.StripeAccountName }
+$account = Get-StripeAccountName $T.StripeProject
+if ($account -ne $ExpectAccount) {
+    Write-Host "demo payment REFUSED: Stripe CLI profile '$($T.StripeProject)' points at '$account', expected '$ExpectAccount'" -ForegroundColor Red
+    exit 1
+}
 
 $overrides = @(
     '--override', 'price:currency=eur',
@@ -30,10 +43,10 @@ $stripe = (Get-Command stripe -ErrorAction Stop).Source
 for ($try = 1; $try -le $Tries; $try++) {
     # The CLI writes a hint line to stderr; Windows PowerShell 5.1 would turn that into an error under 'Stop'.
     $ErrorActionPreference = 'Continue'
-    $out = & $stripe trigger checkout.session.completed @overrides 2>&1 | ForEach-Object { "$_" } | Where-Object { $_ -notmatch 'claude-code-hint' }
+    $out = & $stripe trigger checkout.session.completed @overrides --project-name $T.StripeProject 2>&1 | ForEach-Object { "$_" } | Where-Object { $_ -notmatch 'claude-code-hint' }
     $exit = $LASTEXITCODE
     $ErrorActionPreference = 'Stop'
-    if ($exit -eq 0) { Write-Host "demo payment fired (try $try of $Tries)"; exit 0 }
+    if ($exit -eq 0) { Write-Host "demo payment fired in '$account' (try $try of $Tries)"; exit 0 }
     $text = ($out -join ' ') -replace '\s+', ' '
     if ($text -match 'checkout_amount_mismatch' -and $try -lt $Tries) {
         Write-Host "try $try of ${Tries}: checkout_amount_mismatch (Adaptive Pricing), retrying" -ForegroundColor Yellow

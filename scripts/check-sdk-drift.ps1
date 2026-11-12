@@ -7,9 +7,14 @@
 # It also fails when a workflow has an unpublished draft: n8n 2.x edits change the draft, and the live trigger keeps running the
 # published version, so a file can match the draft while production runs something older (found in M7b-3).
 # -PublishedOnlyIds <id,...> checks only that for the given workflows, to prove the failure path on a workflow with a draft.
+# -Target Server exports from the server n8n and maps the laptop's credential and data table ids in each compiled file to the server's
+# (infra\n8n-ids.server.json, sdk-drift\apply-ids.mjs) before comparing. Workflow ids are the same on both (import keeps them).
 # First run installs the pinned SDK (npm ci in scripts\sdk-drift, needs the network once).
-param([string]$SdkDir = (Split-Path -Parent $PSScriptRoot), [string[]]$PublishedOnlyIds = @())
+param([string]$SdkDir = (Split-Path -Parent $PSScriptRoot), [string[]]$PublishedOnlyIds = @(), [ValidateSet('Laptop', 'Server')][string]$Target = 'Laptop')
 $ErrorActionPreference = 'Stop'
+. "$PSScriptRoot\lib\target.ps1"
+$T = Get-Target $Target
+function Export-Workflow([string]$Id) { return (@(Invoke-TargetSh $T "docker exec n8n n8n export:workflow --id=$Id 2>/dev/null") -join "`n") }
 
 $tool = Join-Path $PSScriptRoot 'sdk-drift'
 if (-not (Test-Path (Join-Path $tool 'node_modules\@n8n\workflow-sdk'))) {
@@ -39,7 +44,7 @@ $PublishedOnlyIds = @($PublishedOnlyIds | ForEach-Object { $_ -split ',' } | For
 if ($PublishedOnlyIds.Count -gt 0) {
     $bad = 0
     foreach ($id in $PublishedOnlyIds) {
-        $raw = (@(wsl -d Ubuntu docker exec n8n n8n export:workflow "--id=$id" 2>$null) -join "`n")
+        $raw = Export-Workflow $id
         if ($raw.IndexOf('[') -lt 0) { Write-Host "[FAIL] $id : no workflow JSON from n8n export" -ForegroundColor Red; $bad++; continue }
         if (Test-Published $id $raw) { Write-Host "[PASS] $id : published version is the current draft" -ForegroundColor Green }
         else { Write-Host "[FAIL] $id : unpublished draft (live runs an older version, or the workflow is not published)" -ForegroundColor Red; $bad++ }
@@ -57,7 +62,7 @@ try {
 
         # Exported by id, written to a file (the CLI can print warnings before the JSON array; compare.mjs cuts at the first '[').
         $exportFile = Join-Path $tmp ($w.Id + '.raw')
-        $raw = (@(wsl -d Ubuntu docker exec n8n n8n export:workflow "--id=$($w.Id)" 2>$null) -join "`n")
+        $raw = Export-Workflow $w.Id
         if ($raw.IndexOf('[') -lt 0) { Write-Host "[FAIL] $($w.File) : no workflow JSON from n8n export" -ForegroundColor Red; $failed++; continue }
         [IO.File]::WriteAllText($exportFile, $raw, (New-Object System.Text.UTF8Encoding($false)))
 
@@ -65,6 +70,12 @@ try {
         $out = @(& node (Join-Path $tool 'compile.mjs') $src $compiled 2>&1)
         if ($LASTEXITCODE -ne 0) { Write-Host "[FAIL] $($w.File) : does not compile" -ForegroundColor Red; $out | Select-Object -First 5 | ForEach-Object { Write-Host "        $_" }; $failed++; continue }
 
+        if ($T.IdMap) {
+            $mapped = Join-Path $tmp ($w.Id + '.mapped.json')
+            $out = @(& node (Join-Path $tool 'apply-ids.mjs') $T.IdMap $compiled $mapped 2>&1)
+            if ($LASTEXITCODE -ne 0) { Write-Host "[FAIL] $($w.File) : ids cannot be mapped to $Target" -ForegroundColor Red; $out | Select-Object -First 3 | ForEach-Object { Write-Host "        $_" }; $failed++; continue }
+            $compiled = $mapped
+        }
         $cmp = @(& node (Join-Path $tool 'compare.mjs') $compiled $exportFile 2>&1)
         $diffLines = @($cmp | Where-Object { "$_" -match '^DIFF|^        ' })
         $cmpExit = $LASTEXITCODE
@@ -84,5 +95,7 @@ try {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+# Write-Output: e2e reads this line.
+Write-Output ("{0} failed" -f $failed)
 if ($failed -gt 0) { exit 1 }
 exit 0

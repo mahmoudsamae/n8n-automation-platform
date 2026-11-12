@@ -22,7 +22,8 @@ $unpinned = @($images | Where-Object { $_ -notmatch ':[^/:]+$' -or $_ -match ':l
 Write-Step 'compose: every image pinned to a version' ($images.Count -gt 0 -and $unpinned.Count -eq 0) $(if ($unpinned.Count) { $unpinned -join ', ' } else { "$($images.Count) images" })
 $limits = @($lines | Where-Object { $_ -match '^\s+mem_limit\s*:' })
 Write-Step 'compose: mem_limit on every service' ($limits.Count -eq $images.Count) "$($limits.Count) of $($images.Count)"
-if ($StaticOnly) { if ($failed -gt 0) { exit 1 }; exit 0 }
+# Write-Output (not Write-Host) for the summary line: e2e -Target Server reads it, as it does for check-n8n-env.ps1.
+if ($StaticOnly) { Write-Output ("{0} failed" -f $failed); if ($failed -gt 0) { exit 1 }; exit 0 }
 
 $sh = @'
 for c in $(docker ps -aq); do
@@ -38,7 +39,7 @@ docker stats --no-stream --format 'table {{.Name}}\t{{.MemUsage}}\t{{.CPUPerc}}'
 free -m
 '@
 $out = @(& "$PSScriptRoot\server-sh.ps1" -Script $sh)
-if ($LASTEXITCODE -ne 0) { Write-Step 'server reachable over Tailscale' $false "exit $LASTEXITCODE"; exit 1 }
+if ($LASTEXITCODE -ne 0) { Write-Step 'server reachable over Tailscale' $false "exit $LASTEXITCODE"; Write-Output '1 failed'; exit 1 }
 
 $expected = 'n8n', 'postgres', 'mailpit', 'gotenberg'
 $containers = @($out | Where-Object { "$_" -like 'container=*' } | ForEach-Object {
@@ -72,5 +73,6 @@ Write-Step 'no unexpected UDP listener on a public address' ($unexpectedUdp.Coun
 $i = [array]::IndexOf($out, '--- memory')
 if ($i -ge 0) { $out[$i..($out.Count - 1)] | ForEach-Object { Write-Host "$_" } }
 
+Write-Output ("{0} failed" -f $failed)
 if ($failed -gt 0) { exit 1 }
 exit 0
