@@ -688,6 +688,39 @@ M7b-3, built and proven on the laptop first, 2026-11-09. Times Berlin (CET, UTC+
 
 **Not proven yet (needs the workflows and the tunnel, M7b-5a/5b):** the server paths of the drift id mapping against live exports, invoice delivery through the tunnel, `replay.ps1 -Target Server`, the resend check by Intake run count, and the stale-timestamp check against the public URL. On the server, the stale-timestamp rows stay (DELETE is refused by the guard there, by design): unique ids per run, `ignored`, cleared by the M7c reset.
 
+### Server n8n: workflows imported, still private (M7b-5a, 12 Nov)
+
+Times Berlin (CET, UTC+1). Stripe cannot reach the server until 5b, so real events from "New business sandbox" were posted through e2e-style SSH tunnels with `scripts/send-signed-event.ps1` (HMAC computed on the server from its `.env`; only the hex digest leaves it).
+
+**Review findings from PR #19 (merged before they were fixed):**
+- **Tunnel cleanup.** e2e's body after `Open-TargetTunnel` now sits in one `try/finally` that calls `Close-TargetTunnel` (PowerShell 5.1 runs `finally` on `exit` and on a throw: tested first). Proof with the same sabotage, `throw` right after the tunnel step, in two scratch worktrees, `-Target Server -PreflightOnly`: old code -> port 25678 still listening, ssh pid left running (FAIL; killed by hand); new code -> 0 listeners, 0 ssh processes with 25678 (PASS).
+- **Resend proof by event id.** `Get-IntakeExecutions` (`scripts/lib/target.ps1`) counts Intake executions after a baseline id whose saved data contains the event id (id checked by regex, bound as a SQL parameter). e2e uses it on both targets; the laptop keeps its listener-log check too.
+  - Laptop, fail: baseline 3932, then only unrelated traffic (`check-stale-timestamp.ps1`: 2 Intake runs, 3951 and 3952). Old all-runs count: "arrived" (false positive). New count for the real event: 0 -> FAIL. Pass: laptop e2e step 6 `resend reached the Intake (a new Intake execution carries this event id)`.
+  - Server, fail: baseline 7, an unrelated signed `evt_test_unrelated_*` -> old count "arrived", new count 0 -> FAIL. Pass: the same real event posted again -> `200 {"received":true,"duplicate":true}`, new count 1, still 1 row, `done`.
+
+**`Stripe-Version: 2025-03-31.basil`** on the three `Fetch Session` tries (`stripe-processor.sdk.ts`), applied to the laptop with MCP `update_workflow` + `publish_workflow`, drift 0 failed. A throwaway laptop workflow (archived after) proves n8n really sends it from a predefined-credential HTTP node: `1999-01-01.invalid` -> Stripe `400 Invalid Stripe API version`; basil -> 200 with response header `stripe-version: 2025-03-31.basil`.
+
+**Import.** `scripts/import-workflows.ps1`: compile -> `apply-ids.mjs` -> settings from `scripts/lib/workflows.ps1` (now also the list `check-error-workflows.ps1` and `check-sdk-drift.ps1` read, so import and check cannot disagree) -> scp -> `import:workflow` -> `publish:workflow` -> `-Restart`. Findings while building it:
+- The `.sdk.ts` files compile to a slug id (`stripe-send-alert`), not the n8n id: the name check refused all 7 before anything was imported. The script now sets the id from the list and still requires the name to match.
+- `publish:workflow` prints "Changes will not take effect if n8n is running": hence `-Restart`.
+- **`import:workflow` re-links an unknown credential id by NAME**: an Intake imported with the crypto credential id `missingCred0000a` but the real name came back pointing at the real `3OTqo37aAyLYqfrV`.
+- `n8n execute` inside the container fails (`Task Broker's port 5679 is already in use`): throwaways run through MCP `execute_workflow` (needs `availableInMCP`).
+
+**Missing crypto credential -> 500 (the MEDIUM from M7b-3), owner-approved sabotage of the private server.** The Intake imported once with credential id `missingCred0000a` AND name `missing-credential-proof` (export confirmed), published, n8n restarted. A signed `evt_test_missingcred_1794474931` at 10:15:38 (09:15:38 UTC): **`500`**, **0 rows**, Intake exec 1 `error` (`Credential with ID ... does not exist`, `CredentialsHelper.getCredentialsEntity`), Error Handler exec 2 and Send Alert exec 3 `success`, **exactly 1** server Mailpit message `[Stripe alert] Workflow error: Stripe Intake / HMAC` (before: 0). **The owner confirmed the Telegram alert at about 10:15** on the server bot. Then re-imported with the real map: export shows `HMAC {"crypto":{"id":"3OTqo37aAyLYqfrV","name":"Stripe webhook secret"}}`, published.
+
+**Real session lookup in "New business sandbox".** `demo-payment.ps1 -Tag e2e -Target Server` (try 1), event `evt_1UauBOIhNo8F48zzxmms9PW2` retrieved at `--stripe-version 2025-03-31.basil` (paid, 3000 eur, livemode false), posted signed -> `200 {"received":true}` -> `done`, attempts 1. Invoice `INV-2026-000001`, 3000 eur, `Karte (Visa)` (the card brand comes only from the lookup's expanded charge), 1 line item; side effects `email,telegram,telegram_document`; **the owner confirmed the invoice message for INV-2026-000001 on the new bot** ("M7 Invoice Server"). Processor exec 8: `Fetch Session (try 1)` returned a `checkout.session`, try 2 never ran. Stripe's own delivery of this event to the not-yet-public URL keeps retrying; 5b must show that late retry arriving as a duplicate (owner decision).
+
+**The #19 server paths 5a can prove:**
+- `check-invoice-delivery.ps1 -Target Server` through the tunnel: 11 PASS (1 email, 1 real PDF of 32103 bytes, `telegram_document`), exit 0. Then the check's deliberate fail-once switch `-ExpectedAttachments 2` (a wrong expectation on purpose; the email really has 1 PDF) -> `[FAIL] exactly 2 PDF attachment(s) on the email`, exit 1. Re-run on 12 Nov after the PR opened: same two results.
+- `replay.ps1 -Target Server`: done event -> REFUSED, exit 1, row and `event_replays` unchanged; malformed id -> exit 2.
+- Drift id mapping against live server exports, inside the server preflight: **22/22 checks passed** (was 19/22: errorWorkflow, drift and the data table references now pass).
+- First `m7-server-n8n` ping: Monitor exec 15 at 10:22:33 (09:22:33 UTC), `Heartbeat Ping: success` (only that node's status read). **The owner read out `m7-server-n8n` as green, last ping 10:37.**
+
+**Still not proven:** the stale-timestamp check against the public URL and a real Stripe delivery (5b); the `wsl.exe` exit -1 retry (cannot be provoked on demand).
+
+**automation-review on the branch (2026-11-12): SHIP**, no CRITICAL or HIGH. Two MEDIUM, both handled in this PR: `send-signed-event.ps1` wrote the event body (customer name, email, address) to a world-readable temp file on the server (now `umask 077`; re-run: 200, row `ignored`, no temp file left); `import-workflows.ps1` deactivates a live workflow until publish and restart, so after 5b Stripe deliveries in that window get 404 and are retried by Stripe (documented in the script).
+Final runs: laptop `e2e.ps1` **53/53 checks passed, 0 failed**; server `e2e.ps1 -Target Server -PreflightOnly` **22/22 checks passed, 0 failed (preflight only)**, port 25678 free afterwards.
+
 ## Safety guards
 
 Recorded 2026-11-03. One pattern list, `scripts/lib/destructive-patterns.json` (10 patterns, each with a harmless `echo` sample), read by the helper guard (`scripts/lib/destructive-guard.ps1`, in `wsl-sh.ps1` and `server-sh.ps1`) and the PreToolUse hook (`scripts/hooks/destructive-guard.mjs`).

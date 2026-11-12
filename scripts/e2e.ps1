@@ -47,21 +47,6 @@ function Stop-E2E([int]$Code) {
     exit $Code
 }
 
-# How many times the Intake ran so far (n8n's SQLite, read-only). On the server there is no listener log, so this is the proof that a
-# resend really reached the Intake.
-function Get-IntakeRuns {
-    $sh = @'
-docker exec -i n8n node - <<'JS'
-const { DatabaseSync } = require('node:sqlite');
-const db = new DatabaseSync('/home/node/.n8n/database.sqlite', { readOnly: true });
-console.log('runs=' + db.prepare("select count(*) c from execution_entity where workflowId = '3j0pWVoxvDY2sdO5'").get().c);
-JS
-'@
-    $line = @(Invoke-TargetSh $T $sh | Where-Object { "$_" -like 'runs=*' })
-    if ($line.Count -ne 1) { throw 'could not count Intake executions' }
-    return [int]("$($line[0])".Substring(5))
-}
-
 function Assert-EventId([string]$Id) {
     if ($Id -notmatch '^evt_[A-Za-z0-9]+$') { throw "unexpected event id format" }
 }
@@ -118,280 +103,288 @@ Write-Host "== 1. Preflight ($Target) ==" -ForegroundColor Cyan
 & "$PSScriptRoot\lint-migrations.ps1"
 Write-Step 'migrations lint (no ON DELETE CASCADE)' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
 
-if ($T.Tunnel) {
-    try {
-        $tunnel = Open-TargetTunnel $T
-        Write-Step 'SSH tunnel to the server is up (n8n and Mailpit forwarded)' $true "$($T.N8nUrl), $($T.MailpitUrl)"
-    } catch {
-        Write-Step 'SSH tunnel to the server is up (n8n and Mailpit forwarded)' $false $_.Exception.Message
-        Write-Host "`n== Summary ==" -ForegroundColor Cyan
-        Write-Host ("{0}/{1} checks passed, {2} failed" -f $script:Passed, ($script:Passed + $script:Failed), $script:Failed) -ForegroundColor Red
-        Stop-E2E 1
+# Everything after the tunnel opens runs inside this try, so the ssh process is closed on every path out: an early exit, a throw
+# from a check or a missing tool, or the normal end (review finding on PR #19: a throw before the inner try left it running).
+try {
+    if ($T.Tunnel) {
+        try {
+            $tunnel = Open-TargetTunnel $T
+            Write-Step 'SSH tunnel to the server is up (n8n and Mailpit forwarded)' $true "$($T.N8nUrl), $($T.MailpitUrl)"
+        } catch {
+            Write-Step 'SSH tunnel to the server is up (n8n and Mailpit forwarded)' $false $_.Exception.Message
+            Write-Host "`n== Summary ==" -ForegroundColor Cyan
+            Write-Host ("{0}/{1} checks passed, {2} failed" -f $script:Passed, ($script:Passed + $script:Failed), $script:Failed) -ForegroundColor Red
+            Stop-E2E 1
+        }
     }
-}
 
-$running = @()
-try {
-    $running = @(Invoke-TargetSh $T "cd $($T.ComposeDir) && docker compose $($T.ComposeArgs) ps --status running --services") |
-        ForEach-Object { "$_".Trim() } | Where-Object { $_ }
-} catch {
-    Write-Step 'docker compose reachable' $false $_.Exception.Message
-}
-
-foreach ($svc in 'postgres', 'mailpit', 'n8n', 'gotenberg') {
-    Write-Step "container '$svc' running" ($running -contains $svc)
-}
-
-try {
-    $resp = Invoke-WebRequest -Uri "$($T.N8nUrl)/healthz" -UseBasicParsing -TimeoutSec 5
-    Write-Step "n8n answers on $($T.N8nUrl)" ($resp.StatusCode -eq 200) "GET /healthz -> $($resp.StatusCode)"
-} catch {
-    Write-Step "n8n answers on $($T.N8nUrl)" $false $_.Exception.Message
-}
-
-# Migration 005 (M4) adds the columns the Processor, Monitor and replay.ps1 rely on.
-try {
-    $m5 = Invoke-Sql "select (select count(*) from information_schema.columns where table_name = 'stripe_events' and column_name in ('alerted_at', 'pending_since')) || '|' || coalesce(to_regclass('public.event_replays')::text, 'missing')"
-    Write-Step 'migration 005 applied (alerted_at, pending_since, event_replays)' ($m5 -eq '2|event_replays') $m5
-} catch {
-    Write-Step 'migration 005 applied (alerted_at, pending_since, event_replays)' $false $_.Exception.Message
-}
-
-# Migration 006 (invoice design) adds what the invoice documents are rendered from: customer_name, payment_method, line_items.
-try {
-    $m6 = Invoke-Sql "select (select count(*) from information_schema.columns where table_name = 'invoices' and column_name in ('customer_name', 'payment_method', 'line_items')) || '|' || (select count(*) from pg_constraint where conname = 'invoices_document_all_or_none')"
-    Write-Step 'migration 006 applied (invoice document columns and their CHECK)' ($m6 -eq '3|1') $m6
-} catch {
-    Write-Step 'migration 006 applied (invoice document columns and their CHECK)' $false $_.Exception.Message
-}
-
-# M5: errorWorkflow lives only in n8n (not in the .sdk.ts files), so check it on the live workflows.
-$null = Invoke-Check 'errorWorkflow correct on all 7 workflows' { & "$PSScriptRoot\check-error-workflows.ps1" -Target $Target }
-
-# Every change to a live workflow must be exported to its .sdk.ts file: compile each file and diff it against the live export.
-# On the server the laptop's credential and data table ids are mapped first (infra\n8n-ids.server.json).
-$null = Invoke-Check 'all 7 .sdk.ts files match their live workflows' { & "$PSScriptRoot\check-sdk-drift.ps1" -Target $Target }
-
-$null = & node "$PSScriptRoot\sdk-drift\apply-ids.test.mjs"
-Write-Step 'apply-ids.mjs: maps credential and data table ids, refuses unknown ids' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
-
-# Doc rot: CLAUDE.md within its line limit, every relative link and image in README and docs resolves (known-missing images warn).
-& "$PSScriptRoot\check-docs.ps1"
-Write-Step 'docs: CLAUDE.md within its line limit, no broken relative links, no public IP' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
-
-# Safety guards: the hook blocks destructive text sent to an executor, and wsl-sh.ps1 refuses it before sending (samples only echo).
-$null = & node "$PSScriptRoot\hooks\destructive-guard.test.mjs"
-Write-Step 'destructive-guard hook: every pattern blocked, controls allowed' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
-$null = & node "$PSScriptRoot\hooks\destructive-guard.test.mjs" --prove-failure
-Write-Step 'destructive-guard test fails against allow-all and block-all stubs' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
-$guardTarget = if ($Target -eq 'Laptop') { 'wsl' } else { 'server' }
-$null = & "$PSScriptRoot\check-destructive-guard.ps1" -Target $guardTarget 2>$null
-Write-Step "$(if ($Target -eq 'Laptop') { 'wsl-sh.ps1' } else { 'server-sh.ps1' }) refuses every destructive pattern (-Script, -File, piped)" ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
-
-if ($Target -eq 'Laptop') {
-    # M5: the newest Postgres dump must exist, be non-empty and be younger than 25 h (the backup container dumps at start and every 24 h).
+    $running = @()
     try {
-        $dumps = @(wsl -d Ubuntu bash -c "docker exec postgres-backup find /backups -maxdepth 1 -name 'automation-*.dump' -size +0c -mmin -1500") |
+        $running = @(Invoke-TargetSh $T "cd $($T.ComposeDir) && docker compose $($T.ComposeArgs) ps --status running --services") |
             ForEach-Object { "$_".Trim() } | Where-Object { $_ }
-        Write-Step 'Postgres backup: non-empty dump younger than 25 h' ($dumps.Count -ge 1) "$($dumps.Count) recent dump(s)"
     } catch {
-        Write-Step 'Postgres backup: non-empty dump younger than 25 h' $false $_.Exception.Message
+        Write-Step 'docker compose reachable' $false $_.Exception.Message
     }
 
-    # M5 follow-up: e2e's own psql calls use the trusted local socket, so a wrong POSTGRES_PASSWORD would pass everything above while
-    # every backup failed. This authenticates over TCP from the backup container with the .env password and reads its last log line.
-    & "$PSScriptRoot\check-backup-health.ps1"
-    Write-Step 'Postgres backup authenticates over TCP and its last log line is not backup FAILED' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
-} else {
-    # The server has no dump files: backup-offsite.sh pipes pg_dump into age and the bucket. Its journal line is the evidence.
-    $null = Invoke-Check 'offsite backup succeeded in the last 25 h, timer active (check-offsite-backup-recent.ps1)' { & "$PSScriptRoot\check-offsite-backup-recent.ps1" }
-    # The stack rules (no published port, pinned images, memory limits), the metadata block and the n8n_app role, as in runbook section 11.
-    $null = Invoke-Check 'stack rules: no published port, pinned images, memory limits (check-prod-stack.ps1)' { & "$PSScriptRoot\check-prod-stack.ps1" }
-    $null = Invoke-Check 'containers cannot reach the metadata service (check-imds-blocked.ps1)' { & "$PSScriptRoot\check-imds-blocked.ps1" }
-    $null = Invoke-Check 'n8n_app has exactly its privileges and logs in over TCP (check-db-role.ps1)' { & "$PSScriptRoot\check-db-role.ps1" }
-}
-
-# M7b-3: workflows cannot read the environment (N8N_BLOCK_ENV_ACCESS_IN_NODE=true, no secret or config name in n8n's environment); the
-# configuration lives in the data tables stripe_config and stripe_heartbeat and the signing secret in the crypto credential. Names only.
-# telegram_send_pdf has no default on purpose (it decides whether customer data goes to Telegram): anything but true/false fails every event.
-$envOut = Invoke-Check 'env access blocked, config in data tables, signing secret in the credential (check-n8n-env.ps1)' { & "$PSScriptRoot\check-n8n-env.ps1" -Target $Target }
-$sendPdfLine = @($envOut | Where-Object { $_ -like 'telegram_send_pdf=*' })[0]
-$sendPdf = ($sendPdfLine -eq 'telegram_send_pdf=true')
-
-# The CLI's current profile can change behind our back (stripe login --project-name switches it), so prove where this target's profile points.
-$account = Get-StripeAccountName $T.StripeProject
-Write-Step "Stripe CLI profile '$($T.StripeProject)' is the '$($T.StripeAccountName)' sandbox" ($account -eq $T.StripeAccountName) "points at '$account'"
-
-if ($Target -eq 'Laptop') {
-    # Two listeners would forward every event twice and skew the duplicate checks.
-    $existing = Get-Process -Name stripe -ErrorAction SilentlyContinue
-    Write-Step 'no other stripe CLI process running' (-not $existing) $(if ($existing) { 'stop it first (it may be a stripe listen)' } else { '' })
-}
-
-if ($script:Failed -gt 0 -or $PreflightOnly) {
-    if ($script:Failed -gt 0) {
-        $hint = if ($Target -eq 'Laptop') { "Start the stack: wsl -d Ubuntu bash -c `"cd ~/n8n && docker compose up -d`"" } else { 'Server: see docs/runbook.md section 11.' }
-        Write-Host "`nPreflight failed. $hint" -ForegroundColor Yellow
+    foreach ($svc in 'postgres', 'mailpit', 'n8n', 'gotenberg') {
+        Write-Step "container '$svc' running" ($running -contains $svc)
     }
-    Write-Host "`n== Summary ==" -ForegroundColor Cyan
-    Write-Host ("{0}/{1} checks passed, {2} failed{3}" -f $script:Passed, ($script:Passed + $script:Failed), $script:Failed, $(if ($PreflightOnly) { ' (preflight only)' } else { '' })) -ForegroundColor $(if ($script:Failed -eq 0) { 'Green' } else { 'Red' })
-    Stop-E2E $(if ($script:Failed -gt 0) { 1 } else { 0 })
-}
 
-# ---------- 2..7 ----------
-$listenProc = $null
-$logOut = Join-Path ([IO.Path]::GetTempPath()) ("e2e-listen-{0}.out" -f [guid]::NewGuid().ToString('N'))
-$logErr = Join-Path ([IO.Path]::GetTempPath()) ("e2e-listen-{0}.err" -f [guid]::NewGuid().ToString('N'))
+    try {
+        $resp = Invoke-WebRequest -Uri "$($T.N8nUrl)/healthz" -UseBasicParsing -TimeoutSec 5
+        Write-Step "n8n answers on $($T.N8nUrl)" ($resp.StatusCode -eq 200) "GET /healthz -> $($resp.StatusCode)"
+    } catch {
+        Write-Step "n8n answers on $($T.N8nUrl)" $false $_.Exception.Message
+    }
 
-$stripeExe = (Get-Command stripe -ErrorAction Stop).Source
-try {
+    # Migration 005 (M4) adds the columns the Processor, Monitor and replay.ps1 rely on.
+    try {
+        $m5 = Invoke-Sql "select (select count(*) from information_schema.columns where table_name = 'stripe_events' and column_name in ('alerted_at', 'pending_since')) || '|' || coalesce(to_regclass('public.event_replays')::text, 'missing')"
+        Write-Step 'migration 005 applied (alerted_at, pending_since, event_replays)' ($m5 -eq '2|event_replays') $m5
+    } catch {
+        Write-Step 'migration 005 applied (alerted_at, pending_since, event_replays)' $false $_.Exception.Message
+    }
+
+    # Migration 006 (invoice design) adds what the invoice documents are rendered from: customer_name, payment_method, line_items.
+    try {
+        $m6 = Invoke-Sql "select (select count(*) from information_schema.columns where table_name = 'invoices' and column_name in ('customer_name', 'payment_method', 'line_items')) || '|' || (select count(*) from pg_constraint where conname = 'invoices_document_all_or_none')"
+        Write-Step 'migration 006 applied (invoice document columns and their CHECK)' ($m6 -eq '3|1') $m6
+    } catch {
+        Write-Step 'migration 006 applied (invoice document columns and their CHECK)' $false $_.Exception.Message
+    }
+
+    # M5: errorWorkflow lives only in n8n (not in the .sdk.ts files), so check it on the live workflows.
+    $null = Invoke-Check 'errorWorkflow correct on all 7 workflows' { & "$PSScriptRoot\check-error-workflows.ps1" -Target $Target }
+
+    # Every change to a live workflow must be exported to its .sdk.ts file: compile each file and diff it against the live export.
+    # On the server the laptop's credential and data table ids are mapped first (infra\n8n-ids.server.json).
+    $null = Invoke-Check 'all 7 .sdk.ts files match their live workflows' { & "$PSScriptRoot\check-sdk-drift.ps1" -Target $Target }
+
+    $null = & node "$PSScriptRoot\sdk-drift\apply-ids.test.mjs"
+    Write-Step 'apply-ids.mjs: maps credential and data table ids, refuses unknown ids' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
+
+    # Doc rot: CLAUDE.md within its line limit, every relative link and image in README and docs resolves (known-missing images warn).
+    & "$PSScriptRoot\check-docs.ps1"
+    Write-Step 'docs: CLAUDE.md within its line limit, no broken relative links, no public IP' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
+
+    # Safety guards: the hook blocks destructive text sent to an executor, and wsl-sh.ps1 refuses it before sending (samples only echo).
+    $null = & node "$PSScriptRoot\hooks\destructive-guard.test.mjs"
+    Write-Step 'destructive-guard hook: every pattern blocked, controls allowed' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
+    $null = & node "$PSScriptRoot\hooks\destructive-guard.test.mjs" --prove-failure
+    Write-Step 'destructive-guard test fails against allow-all and block-all stubs' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
+    $guardTarget = if ($Target -eq 'Laptop') { 'wsl' } else { 'server' }
+    $null = & "$PSScriptRoot\check-destructive-guard.ps1" -Target $guardTarget 2>$null
+    Write-Step "$(if ($Target -eq 'Laptop') { 'wsl-sh.ps1' } else { 'server-sh.ps1' }) refuses every destructive pattern (-Script, -File, piped)" ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
+
     if ($Target -eq 'Laptop') {
-        # ---- 2. stripe listen in the background ----
-        Write-Host "`n== 2. stripe listen ==" -ForegroundColor Cyan
-        $listenProc = Start-Process -FilePath $stripeExe `
-            -ArgumentList @('listen', '--all-snapshot', '--forward-to', 'localhost:5678/webhook/stripe-intake', '--project-name', $T.StripeProject) `
-            -RedirectStandardOutput $logOut -RedirectStandardError $logErr -WindowStyle Hidden -PassThru
-        $ready = Wait-Until { (Read-Shared $logErr) -match 'Ready!' -or (Read-Shared $logOut) -match 'Ready!' -or $listenProc.HasExited } 20 1
-        $ready = $ready -and -not $listenProc.HasExited
-        Write-Step 'stripe listen is ready' $ready
-        if (-not $ready) { throw 'stripe listen did not become ready (output not shown: may contain a secret)' }
+        # M5: the newest Postgres dump must exist, be non-empty and be younger than 25 h (the backup container dumps at start and every 24 h).
+        try {
+            $dumps = @(wsl -d Ubuntu bash -c "docker exec postgres-backup find /backups -maxdepth 1 -name 'automation-*.dump' -size +0c -mmin -1500") |
+                ForEach-Object { "$_".Trim() } | Where-Object { $_ }
+            Write-Step 'Postgres backup: non-empty dump younger than 25 h' ($dumps.Count -ge 1) "$($dumps.Count) recent dump(s)"
+        } catch {
+            Write-Step 'Postgres backup: non-empty dump younger than 25 h' $false $_.Exception.Message
+        }
+
+        # M5 follow-up: e2e's own psql calls use the trusted local socket, so a wrong POSTGRES_PASSWORD would pass everything above while
+        # every backup failed. This authenticates over TCP from the backup container with the .env password and reads its last log line.
+        & "$PSScriptRoot\check-backup-health.ps1"
+        Write-Step 'Postgres backup authenticates over TCP and its last log line is not backup FAILED' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
     } else {
-        Write-Host "`n== 2. No listener: Stripe delivers to $IntakeUrl ==" -ForegroundColor Cyan
+        # The server has no dump files: backup-offsite.sh pipes pg_dump into age and the bucket. Its journal line is the evidence.
+        $null = Invoke-Check 'offsite backup succeeded in the last 25 h, timer active (check-offsite-backup-recent.ps1)' { & "$PSScriptRoot\check-offsite-backup-recent.ps1" }
+        # The stack rules (no published port, pinned images, memory limits), the metadata block and the n8n_app role, as in runbook section 11.
+        $null = Invoke-Check 'stack rules: no published port, pinned images, memory limits (check-prod-stack.ps1)' { & "$PSScriptRoot\check-prod-stack.ps1" }
+        $null = Invoke-Check 'containers cannot reach the metadata service (check-imds-blocked.ps1)' { & "$PSScriptRoot\check-imds-blocked.ps1" }
+        $null = Invoke-Check 'n8n_app has exactly its privileges and logs in over TCP (check-db-role.ps1)' { & "$PSScriptRoot\check-db-role.ps1" }
     }
 
-    # ---- 3. trigger ----
-    Write-Host "`n== 3. Trigger checkout.session.completed ==" -ForegroundColor Cyan
-    $t0 = Invoke-Sql 'select now()'
-    # The documented demo payment (30,00 EUR "Workshop: Automatisierung mit n8n"), tagged e2e=true; it retries Stripe's Adaptive Pricing amount mismatch.
-    & "$PSScriptRoot\demo-payment.ps1" -Tag e2e -Target $Target
-    Write-Step 'demo payment fired (stripe trigger with the EUR overrides)' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
-    if ($LASTEXITCODE -ne 0) { throw 'demo payment failed' }
+    # M7b-3: workflows cannot read the environment (N8N_BLOCK_ENV_ACCESS_IN_NODE=true, no secret or config name in n8n's environment); the
+    # configuration lives in the data tables stripe_config and stripe_heartbeat and the signing secret in the crypto credential. Names only.
+    # telegram_send_pdf has no default on purpose (it decides whether customer data goes to Telegram): anything but true/false fails every event.
+    $envOut = Invoke-Check 'env access blocked, config in data tables, signing secret in the credential (check-n8n-env.ps1)' { & "$PSScriptRoot\check-n8n-env.ps1" -Target $Target }
+    $sendPdfLine = @($envOut | Where-Object { $_ -like 'telegram_send_pdf=*' })[0]
+    $sendPdf = ($sendPdfLine -eq 'telegram_send_pdf=true')
 
-    # ---- 4. find the event, wait for done ----
-    Write-Host "`n== 4. Wait for the Processor ==" -ForegroundColor Cyan
-    # Prefer the row carrying our e2e metadata tag; trigger fires ~7 events and only one is pending.
-    $findSql = @"
+    # The CLI's current profile can change behind our back (stripe login --project-name switches it), so prove where this target's profile points.
+    $account = Get-StripeAccountName $T.StripeProject
+    Write-Step "Stripe CLI profile '$($T.StripeProject)' is the '$($T.StripeAccountName)' sandbox" ($account -eq $T.StripeAccountName) "points at '$account'"
+
+    if ($Target -eq 'Laptop') {
+        # Two listeners would forward every event twice and skew the duplicate checks.
+        $existing = Get-Process -Name stripe -ErrorAction SilentlyContinue
+        Write-Step 'no other stripe CLI process running' (-not $existing) $(if ($existing) { 'stop it first (it may be a stripe listen)' } else { '' })
+    }
+
+    if ($script:Failed -gt 0 -or $PreflightOnly) {
+        if ($script:Failed -gt 0) {
+            $hint = if ($Target -eq 'Laptop') { "Start the stack: wsl -d Ubuntu bash -c `"cd ~/n8n && docker compose up -d`"" } else { 'Server: see docs/runbook.md section 11.' }
+            Write-Host "`nPreflight failed. $hint" -ForegroundColor Yellow
+        }
+        Write-Host "`n== Summary ==" -ForegroundColor Cyan
+        Write-Host ("{0}/{1} checks passed, {2} failed{3}" -f $script:Passed, ($script:Passed + $script:Failed), $script:Failed, $(if ($PreflightOnly) { ' (preflight only)' } else { '' })) -ForegroundColor $(if ($script:Failed -eq 0) { 'Green' } else { 'Red' })
+        Stop-E2E $(if ($script:Failed -gt 0) { 1 } else { 0 })
+    }
+
+    # ---------- 2..7 ----------
+    $listenProc = $null
+    $logOut = Join-Path ([IO.Path]::GetTempPath()) ("e2e-listen-{0}.out" -f [guid]::NewGuid().ToString('N'))
+    $logErr = Join-Path ([IO.Path]::GetTempPath()) ("e2e-listen-{0}.err" -f [guid]::NewGuid().ToString('N'))
+
+    $stripeExe = (Get-Command stripe -ErrorAction Stop).Source
+    try {
+        if ($Target -eq 'Laptop') {
+            # ---- 2. stripe listen in the background ----
+            Write-Host "`n== 2. stripe listen ==" -ForegroundColor Cyan
+            $listenProc = Start-Process -FilePath $stripeExe `
+                -ArgumentList @('listen', '--all-snapshot', '--forward-to', 'localhost:5678/webhook/stripe-intake', '--project-name', $T.StripeProject) `
+                -RedirectStandardOutput $logOut -RedirectStandardError $logErr -WindowStyle Hidden -PassThru
+            $ready = Wait-Until { (Read-Shared $logErr) -match 'Ready!' -or (Read-Shared $logOut) -match 'Ready!' -or $listenProc.HasExited } 20 1
+            $ready = $ready -and -not $listenProc.HasExited
+            Write-Step 'stripe listen is ready' $ready
+            if (-not $ready) { throw 'stripe listen did not become ready (output not shown: may contain a secret)' }
+        } else {
+            Write-Host "`n== 2. No listener: Stripe delivers to $IntakeUrl ==" -ForegroundColor Cyan
+        }
+
+        # ---- 3. trigger ----
+        Write-Host "`n== 3. Trigger checkout.session.completed ==" -ForegroundColor Cyan
+        $t0 = Invoke-Sql 'select now()'
+        # The documented demo payment (30,00 EUR "Workshop: Automatisierung mit n8n"), tagged e2e=true; it retries Stripe's Adaptive Pricing amount mismatch.
+        & "$PSScriptRoot\demo-payment.ps1" -Tag e2e -Target $Target
+        Write-Step 'demo payment fired (stripe trigger with the EUR overrides)' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
+        if ($LASTEXITCODE -ne 0) { throw 'demo payment failed' }
+
+        # ---- 4. find the event, wait for done ----
+        Write-Host "`n== 4. Wait for the Processor ==" -ForegroundColor Cyan
+        # Prefer the row carrying our e2e metadata tag; trigger fires ~7 events and only one is pending.
+        $findSql = @"
 select event_id from stripe_events
 where event_type = 'checkout.session.completed' and status <> 'ignored'
   and received_at >= '$t0'::timestamptz
 order by (payload->'data'->'object'->'metadata'->>'e2e' = 'true') desc, received_at desc
 limit 1
 "@
-    $eventId = ''
-    # Real delivery through Cloudflare can take longer than the local listener.
-    $arrival = if ($Target -eq 'Laptop') { 30 } else { 90 }
-    $found = Wait-Until { $script:eventId = Invoke-Sql $findSql; [bool]$script:eventId } $arrival 2
-    $why = if ($Target -eq 'Laptop') { 'STRIPE_WEBHOOK_SECRET may not match stripe listen (every event would get 400)' } else { 'check the endpoint in the Stripe sandbox (enabled? its recent deliveries), the tunnel and the WAF rule' }
-    Write-Step 'new checkout.session.completed event stored' $found $(if ($found) { $eventId } else { "none arrived within $arrival s: $why" })
-    if (-not $found) { throw 'event not found in stripe_events' }
-    Assert-EventId $eventId
+        $eventId = ''
+        # Real delivery through Cloudflare can take longer than the local listener.
+        $arrival = if ($Target -eq 'Laptop') { 30 } else { 90 }
+        $found = Wait-Until { $script:eventId = Invoke-Sql $findSql; [bool]$script:eventId } $arrival 2
+        $why = if ($Target -eq 'Laptop') { 'STRIPE_WEBHOOK_SECRET may not match stripe listen (every event would get 400)' } else { 'check the endpoint in the Stripe sandbox (enabled? its recent deliveries), the tunnel and the WAF rule' }
+        Write-Step 'new checkout.session.completed event stored' $found $(if ($found) { $eventId } else { "none arrived within $arrival s: $why" })
+        if (-not $found) { throw 'event not found in stripe_events' }
+        Assert-EventId $eventId
 
-    $tagged = Invoke-Sql "select (payload->'data'->'object'->'metadata'->>'e2e' = 'true') from stripe_events where event_id = '$eventId'"
-    Write-Host ("      metadata e2e=true on event: {0}" -f $(if ($tagged -eq 't') { 'yes' } else { 'no (matched by time window instead)' }))
+        $tagged = Invoke-Sql "select (payload->'data'->'object'->'metadata'->>'e2e' = 'true') from stripe_events where event_id = '$eventId'"
+        Write-Host ("      metadata e2e=true on event: {0}" -f $(if ($tagged -eq 't') { 'yes' } else { 'no (matched by time window instead)' }))
 
-    $done = Wait-Until {
-        $s = Invoke-Sql "select status from stripe_events where event_id = '$eventId'"
-        $s -eq 'done' -or $s -eq 'failed'
-    } 120 3
-    $row = Invoke-Sql "select status || '|' || attempts || '|' || coalesce(last_error, '') from stripe_events where event_id = '$eventId'"
-    $status, $attempts, $lastError = $row -split '\|', 3
-    Write-Step 'event reached status done' ($status -eq 'done') "status=$status attempts=$attempts$(if ($lastError) { " last_error=$lastError" })"
-    if ($status -ne 'done') { throw 'event never reached done' }
+        $done = Wait-Until {
+            $s = Invoke-Sql "select status from stripe_events where event_id = '$eventId'"
+            $s -eq 'done' -or $s -eq 'failed'
+        } 120 3
+        $row = Invoke-Sql "select status || '|' || attempts || '|' || coalesce(last_error, '') from stripe_events where event_id = '$eventId'"
+        $status, $attempts, $lastError = $row -split '\|', 3
+        Write-Step 'event reached status done' ($status -eq 'done') "status=$status attempts=$attempts$(if ($lastError) { " last_error=$lastError" })"
+        if ($status -ne 'done') { throw 'event never reached done' }
 
-    # ---- 5. assertions ----
-    Write-Host "`n== 5. First-delivery assertions ==" -ForegroundColor Cyan
-    $invoiceNumber = Invoke-Sql "select invoice_number from invoices where event_id = '$eventId'"
-    Assert-Counts $eventId $invoiceNumber 'first delivery'
-    Test-Delivery $eventId $invoiceNumber 'first delivery'
+        # ---- 5. assertions ----
+        Write-Host "`n== 5. First-delivery assertions ==" -ForegroundColor Cyan
+        $invoiceNumber = Invoke-Sql "select invoice_number from invoices where event_id = '$eventId'"
+        Assert-Counts $eventId $invoiceNumber 'first delivery'
+        Test-Delivery $eventId $invoiceNumber 'first delivery'
 
-    # ---- 6. resend (intake dedupe) ----
-    Write-Host "`n== 6. Resend the same event ==" -ForegroundColor Cyan
-    $runsBefore = if ($Target -eq 'Laptop') { 0 } else { Get-IntakeRuns }
-    $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'   # the CLI's stderr hint line is an error under 'Stop' in PowerShell 5.1
-    $null = & $stripeExe events resend $eventId --project-name $T.StripeProject 2>$null
-    $resendExit = $LASTEXITCODE; $ErrorActionPreference = $old
-    Write-Step 'stripe events resend succeeded' ($resendExit -eq 0) "exit $resendExit"
-    if ($Target -eq 'Laptop') {
-        # Wait until the listener has forwarded the event a second time (matched in the log, never printed).
-        $pattern = "-->.*\[$eventId\]"
-        $forwarded = Wait-Until {
-            $log = (Read-Shared $logOut) + (Read-Shared $logErr)
-            ([regex]::Matches($log, $pattern)).Count -ge 2
-        } 30 2
-    } else {
-        # No listener log on the server: a new Intake execution is the positive signal that the resend arrived.
-        $forwarded = Wait-Until { (Get-IntakeRuns) -gt $runsBefore } 90 3
+        # ---- 6. resend (intake dedupe) ----
+        Write-Host "`n== 6. Resend the same event ==" -ForegroundColor Cyan
+        $intakeBefore = (Get-IntakeExecutions $T $eventId).LastId
+        $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'   # the CLI's stderr hint line is an error under 'Stop' in PowerShell 5.1
+        $null = & $stripeExe events resend $eventId --project-name $T.StripeProject 2>$null
+        $resendExit = $LASTEXITCODE; $ErrorActionPreference = $old
+        Write-Step 'stripe events resend succeeded' ($resendExit -eq 0) "exit $resendExit"
+        if ($Target -eq 'Laptop') {
+            # Wait until the listener has forwarded the event a second time (matched in the log, never printed).
+            $pattern = "-->.*\[$eventId\]"
+            $forwarded = Wait-Until {
+                $log = (Read-Shared $logOut) + (Read-Shared $logErr)
+                ([regex]::Matches($log, $pattern)).Count -ge 2
+            } 30 2
+            Write-Step 'resend was forwarded by stripe listen' $forwarded
+        }
+        # On both targets: a NEW Intake execution whose data carries this event id (no listener log on the server; and a count of all
+        # runs would also take any other request in the window).
+        $arrived = Wait-Until { (Get-IntakeExecutions $T $eventId $intakeBefore).Matching -ge 1 } 90 3
+        Write-Step 'resend reached the Intake (a new Intake execution carries this event id)' $arrived
+        Start-Sleep -Seconds 5   # let intake finish its insert/no-op
+        $rows = [int](Invoke-Sql "select count(*) from stripe_events where event_id = '$eventId'")
+        Write-Step 'resend: still exactly 1 stripe_events row' ($rows -eq 1) "found $rows"
+        Assert-Counts $eventId $invoiceNumber 'after resend'
+        Test-Delivery $eventId $invoiceNumber 'after resend'
+
+        # ---- 6b. Processor idempotency ----
+        Write-Host "`n== 6b. Re-run the Processor on the same event ==" -ForegroundColor Cyan
+        $attemptsBefore = [int](Invoke-Sql "select attempts from stripe_events where event_id = '$eventId'")
+        $null = Invoke-Sql "update stripe_events set status = 'pending', claimed_at = null where event_id = '$eventId'"
+        $reDone = Wait-Until {
+            $s = Invoke-Sql "select status from stripe_events where event_id = '$eventId'"
+            $s -eq 'done' -or $s -eq 'failed'
+        } 120 3
+        $row = Invoke-Sql "select status || '|' || attempts || '|' || coalesce(last_error, '') from stripe_events where event_id = '$eventId'"
+        $status, $attemptsAfter, $lastError = $row -split '\|', 3
+        Write-Step 'Processor picked the event up again and finished' ($reDone -and $status -eq 'done') "status=$status$(if ($lastError) { " last_error=$lastError" })"
+        # Without this, unchanged counts would prove nothing: the Processor must really have re-run.
+        Write-Step 'attempts increased (proves a real re-run)' ([int]$attemptsAfter -gt $attemptsBefore) "$attemptsBefore -> $attemptsAfter"
+        Assert-Counts $eventId $invoiceNumber 'after Processor re-run'
+        Test-Delivery $eventId $invoiceNumber 'after Processor re-run'
+
+        # ---- 6c. replay safety ----
+        Write-Host "`n== 6c. replay.ps1 refuses what it must refuse ==" -ForegroundColor Cyan
+        $rowBefore = Invoke-Sql "select status || '|' || attempts || '|' || pending_since from stripe_events where event_id = '$eventId'"
+        $replaysBefore = [int](Invoke-Sql "select count(*) from event_replays where event_id = '$eventId'")
+        $null = & "$PSScriptRoot\replay.ps1" -EventId $eventId -Reason 'e2e: a done event must be refused' -Target $Target
+        Write-Step 'replay.ps1 refuses a done event (exit 1)' ($LASTEXITCODE -eq 1) "exit $LASTEXITCODE"
+        $rowAfter = Invoke-Sql "select status || '|' || attempts || '|' || pending_since from stripe_events where event_id = '$eventId'"
+        Write-Step 'refused replay left the event row unchanged' ($rowAfter -eq $rowBefore)
+        $replaysAfter = [int](Invoke-Sql "select count(*) from event_replays where event_id = '$eventId'")
+        Write-Step 'refused replay wrote no event_replays row' ($replaysAfter -eq $replaysBefore) "found $replaysAfter"
+        $null = & "$PSScriptRoot\replay.ps1" -EventId "x'; drop table stripe_events;--" -Reason 'e2e: malformed id' -Target $Target
+        Write-Step 'replay.ps1 rejects a malformed event id (exit 2)' ($LASTEXITCODE -eq 2) "exit $LASTEXITCODE"
+        $stillThere = [int](Invoke-Sql 'select count(*) from stripe_events')
+        Write-Step 'stripe_events still exists after the malformed-id attempt' ($stillThere -gt 0) "rows $stillThere"
+
+        # ---- 7. bad signature ----
+        Write-Host "`n== 7. Fake-signed request ==" -ForegroundColor Cyan
+        $ts = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()   # not Get-Date -UFormat %s: that is the LOCAL epoch in Windows PowerShell 5.1
+        $code = $null
+        try {
+            $r = Invoke-WebRequest -Uri $IntakeUrl -Method Post -UseBasicParsing -ContentType 'application/json' `
+                -Headers @{ 'Stripe-Signature' = "t=$ts,v1=$('0' * 64)" } -Body '{"id":"evt_fake_e2e","type":"checkout.session.completed"}'
+            $code = [int]$r.StatusCode
+        } catch {
+            if ($_.Exception.Response) { $code = [int]$_.Exception.Response.StatusCode } else { throw }
+        }
+        Write-Step 'fake signature rejected with 400' ($code -eq 400) "got $code"
+        $leak = [int](Invoke-Sql "select count(*) from stripe_events where event_id = 'evt_fake_e2e'")
+        Write-Step 'fake event was not stored' ($leak -eq 0) "found $leak"
+
+        # ---- 7b. stale timestamp ----
+        Write-Host "`n== 7b. Validly signed request with a stale timestamp ==" -ForegroundColor Cyan
+        # Its own script so each failure path can be provoked on its own. Stores and removes two evt_test_e2e_stale_* rows.
+        & "$PSScriptRoot\check-stale-timestamp.ps1" -Target $Target
+        Write-Step 'stale timestamp rejected (400, not stored) and the fresh signed control accepted' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
     }
-    Write-Step 'resend was forwarded to intake' $forwarded
-    Start-Sleep -Seconds 5   # let intake finish its insert/no-op
-    $rows = [int](Invoke-Sql "select count(*) from stripe_events where event_id = '$eventId'")
-    Write-Step 'resend: still exactly 1 stripe_events row' ($rows -eq 1) "found $rows"
-    Assert-Counts $eventId $invoiceNumber 'after resend'
-    Test-Delivery $eventId $invoiceNumber 'after resend'
-
-    # ---- 6b. Processor idempotency ----
-    Write-Host "`n== 6b. Re-run the Processor on the same event ==" -ForegroundColor Cyan
-    $attemptsBefore = [int](Invoke-Sql "select attempts from stripe_events where event_id = '$eventId'")
-    $null = Invoke-Sql "update stripe_events set status = 'pending', claimed_at = null where event_id = '$eventId'"
-    $reDone = Wait-Until {
-        $s = Invoke-Sql "select status from stripe_events where event_id = '$eventId'"
-        $s -eq 'done' -or $s -eq 'failed'
-    } 120 3
-    $row = Invoke-Sql "select status || '|' || attempts || '|' || coalesce(last_error, '') from stripe_events where event_id = '$eventId'"
-    $status, $attemptsAfter, $lastError = $row -split '\|', 3
-    Write-Step 'Processor picked the event up again and finished' ($reDone -and $status -eq 'done') "status=$status$(if ($lastError) { " last_error=$lastError" })"
-    # Without this, unchanged counts would prove nothing: the Processor must really have re-run.
-    Write-Step 'attempts increased (proves a real re-run)' ([int]$attemptsAfter -gt $attemptsBefore) "$attemptsBefore -> $attemptsAfter"
-    Assert-Counts $eventId $invoiceNumber 'after Processor re-run'
-    Test-Delivery $eventId $invoiceNumber 'after Processor re-run'
-
-    # ---- 6c. replay safety ----
-    Write-Host "`n== 6c. replay.ps1 refuses what it must refuse ==" -ForegroundColor Cyan
-    $rowBefore = Invoke-Sql "select status || '|' || attempts || '|' || pending_since from stripe_events where event_id = '$eventId'"
-    $replaysBefore = [int](Invoke-Sql "select count(*) from event_replays where event_id = '$eventId'")
-    $null = & "$PSScriptRoot\replay.ps1" -EventId $eventId -Reason 'e2e: a done event must be refused' -Target $Target
-    Write-Step 'replay.ps1 refuses a done event (exit 1)' ($LASTEXITCODE -eq 1) "exit $LASTEXITCODE"
-    $rowAfter = Invoke-Sql "select status || '|' || attempts || '|' || pending_since from stripe_events where event_id = '$eventId'"
-    Write-Step 'refused replay left the event row unchanged' ($rowAfter -eq $rowBefore)
-    $replaysAfter = [int](Invoke-Sql "select count(*) from event_replays where event_id = '$eventId'")
-    Write-Step 'refused replay wrote no event_replays row' ($replaysAfter -eq $replaysBefore) "found $replaysAfter"
-    $null = & "$PSScriptRoot\replay.ps1" -EventId "x'; drop table stripe_events;--" -Reason 'e2e: malformed id' -Target $Target
-    Write-Step 'replay.ps1 rejects a malformed event id (exit 2)' ($LASTEXITCODE -eq 2) "exit $LASTEXITCODE"
-    $stillThere = [int](Invoke-Sql 'select count(*) from stripe_events')
-    Write-Step 'stripe_events still exists after the malformed-id attempt' ($stillThere -gt 0) "rows $stillThere"
-
-    # ---- 7. bad signature ----
-    Write-Host "`n== 7. Fake-signed request ==" -ForegroundColor Cyan
-    $ts = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()   # not Get-Date -UFormat %s: that is the LOCAL epoch in Windows PowerShell 5.1
-    $code = $null
-    try {
-        $r = Invoke-WebRequest -Uri $IntakeUrl -Method Post -UseBasicParsing -ContentType 'application/json' `
-            -Headers @{ 'Stripe-Signature' = "t=$ts,v1=$('0' * 64)" } -Body '{"id":"evt_fake_e2e","type":"checkout.session.completed"}'
-        $code = [int]$r.StatusCode
-    } catch {
-        if ($_.Exception.Response) { $code = [int]$_.Exception.Response.StatusCode } else { throw }
+    catch {
+        Write-Step 'script aborted' $false $_.Exception.Message
     }
-    Write-Step 'fake signature rejected with 400' ($code -eq 400) "got $code"
-    $leak = [int](Invoke-Sql "select count(*) from stripe_events where event_id = 'evt_fake_e2e'")
-    Write-Step 'fake event was not stored' ($leak -eq 0) "found $leak"
+    finally {
+        if ($listenProc -and -not $listenProc.HasExited) { Stop-Process -Id $listenProc.Id -Force -ErrorAction SilentlyContinue }
+        Remove-Item -LiteralPath $logOut, $logErr -Force -ErrorAction SilentlyContinue
+    }
 
-    # ---- 7b. stale timestamp ----
-    Write-Host "`n== 7b. Validly signed request with a stale timestamp ==" -ForegroundColor Cyan
-    # Its own script so each failure path can be provoked on its own. Stores and removes two evt_test_e2e_stale_* rows.
-    & "$PSScriptRoot\check-stale-timestamp.ps1" -Target $Target
-    Write-Step 'stale timestamp rejected (400, not stored) and the fresh signed control accepted' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
-}
-catch {
-    Write-Step 'script aborted' $false $_.Exception.Message
+    # ---------- 8. Summary ----------
+    Write-Host "`n== Summary ($Target) ==" -ForegroundColor Cyan
+    $total = $script:Passed + $script:Failed
+    $color = if ($script:Failed -eq 0) { 'Green' } else { 'Red' }
+    Write-Host ("{0}/{1} checks passed, {2} failed" -f $script:Passed, $total, $script:Failed) -ForegroundColor $color
+    Stop-E2E $(if ($script:Failed -eq 0) { 0 } else { 1 })
 }
 finally {
-    if ($listenProc -and -not $listenProc.HasExited) { Stop-Process -Id $listenProc.Id -Force -ErrorAction SilentlyContinue }
-    Remove-Item -LiteralPath $logOut, $logErr -Force -ErrorAction SilentlyContinue
+    Close-TargetTunnel $script:tunnel
 }
-
-# ---------- 8. Summary ----------
-Write-Host "`n== Summary ($Target) ==" -ForegroundColor Cyan
-$total = $script:Passed + $script:Failed
-$color = if ($script:Failed -eq 0) { 'Green' } else { 'Red' }
-Write-Host ("{0}/{1} checks passed, {2} failed" -f $script:Passed, $total, $script:Failed) -ForegroundColor $color
-Stop-E2E $(if ($script:Failed -eq 0) { 0 } else { 1 })

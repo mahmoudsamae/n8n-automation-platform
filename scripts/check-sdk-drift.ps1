@@ -13,6 +13,7 @@
 param([string]$SdkDir = (Split-Path -Parent $PSScriptRoot), [string[]]$PublishedOnlyIds = @(), [ValidateSet('Laptop', 'Server')][string]$Target = 'Laptop')
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot\lib\target.ps1"
+. "$PSScriptRoot\lib\workflows.ps1"
 $T = Get-Target $Target
 function Export-Workflow([string]$Id) { return (@(Invoke-TargetSh $T "docker exec n8n n8n export:workflow --id=$Id 2>/dev/null") -join "`n") }
 
@@ -23,16 +24,8 @@ if (-not (Test-Path (Join-Path $tool 'node_modules\@n8n\workflow-sdk'))) {
     try { & npm ci --no-audit --no-fund 2>&1 | Out-Null; if ($LASTEXITCODE -ne 0) { Write-Host '[FAIL] npm ci failed' -ForegroundColor Red; exit 1 } } finally { Pop-Location }
 }
 
-# id, source file
-$workflows = @(
-    @{ Id = '3j0pWVoxvDY2sdO5'; File = 'stripe-intake.sdk.ts' }
-    @{ Id = 'ylR2t9B0ZAH1cLfq'; File = 'stripe-processor.sdk.ts' }
-    @{ Id = 'yeSlEcPp87vCJT7D'; File = 'stripe-monitor.sdk.ts' }
-    @{ Id = 'c2NT8k3JGpuS3r6I'; File = 'stripe-error-handler.sdk.ts' }
-    @{ Id = 'WO2ebvkZGK5NxzVo'; File = 'stripe-send-alert.sdk.ts' }
-    @{ Id = '3dvdSRSD6ObBVsxy'; File = 'stripe-render-invoice.sdk.ts' }
-    @{ Id = 'Yel7C2ufq8wR5s3W'; File = 'stripe-send-telegram.sdk.ts' }
-)
+# id, source file (scripts\lib\workflows.ps1)
+$workflows = Get-Workflows
 
 # Draft and published version ids come from the same export; versionId is the draft, activeVersionId what the trigger runs.
 function Test-Published([string]$Id, [string]$Raw) {

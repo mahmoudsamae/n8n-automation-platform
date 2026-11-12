@@ -6,21 +6,15 @@
 # Run: powershell -File scripts\check-error-workflows.ps1 [-ErrorHandlerId <id>] [-Target Laptop|Server]   Exit 0 = all correct, 1 = problem.
 # Prints names and ids only. -ErrorHandlerId lets you prove the failure path without editing a live workflow.
 # Workflow ids are the same on the server (import:workflow keeps them), so the list below serves both targets.
-param([string]$ErrorHandlerId = 'c2NT8k3JGpuS3r6I', [ValidateSet('Laptop', 'Server')][string]$Target = 'Laptop')
+param([string]$ErrorHandlerId = '', [ValidateSet('Laptop', 'Server')][string]$Target = 'Laptop')
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot\lib\target.ps1"
+. "$PSScriptRoot\lib\workflows.ps1"
 $T = Get-Target $Target
+if (-not $ErrorHandlerId) { $ErrorHandlerId = $ErrorHandlerWorkflowId }
 
-# id, expected name, expected errorWorkflow ('' = must have none)
-$expected = @(
-    @{ Id = '3j0pWVoxvDY2sdO5'; Name = 'Stripe Intake';        Target = $ErrorHandlerId }
-    @{ Id = 'ylR2t9B0ZAH1cLfq'; Name = 'Stripe Processor';     Target = $ErrorHandlerId }
-    @{ Id = 'yeSlEcPp87vCJT7D'; Name = 'Stripe Monitor';       Target = $ErrorHandlerId }
-    @{ Id = 'c2NT8k3JGpuS3r6I'; Name = 'Stripe Error Handler'; Target = '' }
-    @{ Id = 'WO2ebvkZGK5NxzVo'; Name = 'Stripe Send Alert';    Target = '' }
-    @{ Id = '3dvdSRSD6ObBVsxy'; Name = 'Stripe Render Invoice'; Target = '' }
-    @{ Id = 'Yel7C2ufq8wR5s3W'; Name = 'Stripe Send Telegram'; Target = '' }
-)
+# id, expected name, expected errorWorkflow ('' = must have none); the same list import-workflows.ps1 sets them from.
+$expected = @(Get-Workflows | ForEach-Object { @{ Id = $_.Id; Name = $_.Name; Target = $(if ($_.ErrorHandler) { $ErrorHandlerId } else { '' }) } })
 
 $failed = 0
 foreach ($w in $expected) {

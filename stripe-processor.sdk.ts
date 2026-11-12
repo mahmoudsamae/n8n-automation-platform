@@ -483,6 +483,10 @@ const fetchSession = (name: string, position: [number, number]) =>
         ),
         authentication: 'predefinedCredentialType',
         nodeCredentialType: 'stripeApi',
+        // Pinned, so the response shape does not follow the account's default version (laptop sandbox: 2026-09-30.endive). Same as the
+        // server's webhook destination; all 14 fields read below were identical at endive and basil (docs/evidence.md, M7b-4).
+        sendHeaders: true,
+        headerParameters: { parameters: [{ name: 'Stripe-Version', value: '2025-03-31.basil' }] },
         options: { timeout: 20000 },
       },
       credentials: { stripeApi: { id: 'qtmzPq7nRsOF9MAW', name: 'Stripe read-only' } },
