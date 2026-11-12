@@ -7,3 +7,6 @@ Requires=docker.service
 Type=oneshot
 User=ubuntu
 ExecStart=/bin/bash /home/ubuntu/n8n-workflows/infra/backup-offsite.sh
+# A oneshot has no start timeout by default: a hung export would block every later run. A normal run takes about 20 s (M7b-6).
+# On timeout systemd sends SIGTERM; the script traps it, so its EXIT trap still removes the plaintext in /dev/shm.
+TimeoutStartSec=15min

@@ -26,6 +26,8 @@ tmp="$(mktemp -d)"
 ram="$(mktemp -d -p /dev/shm)"
 cdir=/dev/shm/n8n-backup
 trap 'rm -rf "$tmp" "$ram"; docker exec n8n rm -rf "$cdir" >/dev/null 2>&1 || true' EXIT
+# bash skips the EXIT trap when a signal kills it (systemd's TimeoutStartSec sends SIGTERM): turn the signal into an exit.
+trap 'exit 143' TERM INT
 
 upload() {
   # --retry covers 429, 5xx and network errors, with exponential backoff.

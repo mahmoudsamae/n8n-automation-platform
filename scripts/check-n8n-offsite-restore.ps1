@@ -9,7 +9,7 @@
 # The server's key comes from Bitwarden "M7 server N8N_ENCRYPTION_KEY" into a mode-600 WSL file for the drill; the owner shreds it after.
 # Run: powershell -File scripts\check-n8n-offsite-restore.ps1 -File <n8n-...tar.age> [-AgeKeyFile <WSL path>] [-N8nKeyFile <WSL path>]
 # Exit 0 = restores and matches, 1 = problem. Prove it can fail: -WrongKey (a random key instead of the server's), -TamperErrorWorkflow
-# (Intake's errorWorkflow changed in both restore inputs), a copy with one byte flipped.
+# (Intake's errorWorkflow changed in workflows.json: the json phase fails, entities still passes), a copy with one byte flipped.
 param(
     [Parameter(Mandatory = $true)][string]$File,
     [string]$AgeKeyFile = '~/.config/age/m7-backup.key',
@@ -64,32 +64,15 @@ for (const c of db.prepare('select id, name, type from credentials_entity').all(
 '@
 $verifyB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($verifyJs -replace "`r", '')))
 
-# Changes Intake's errorWorkflow in workflows.json and in entities.zip's workflowentity.jsonl (settings may be a JSON string there).
+# Changes Intake's errorWorkflow in workflows.json only. entities.zip cannot be edited without the n8n key: export:entities encrypts its
+# workflow, credential and data table files with it (CryptoJS). Both phases use the same check below, so the json phase proves it can fail.
 $tamperPy = @'
-import json, sys, zipfile
+import json, sys
 d, wid = sys.argv[1], sys.argv[2]
-def fix(s):
-    obj = json.loads(s) if isinstance(s, str) else (s or {})
-    obj['errorWorkflow'] = 'tamperedTAMPERED'
-    return json.dumps(obj) if isinstance(s, str) else obj
 wf = json.load(open(f'{d}/workflows.json'))
 for w in wf:
-    if w['id'] == wid: w['settings'] = fix(w.get('settings'))
+    if w['id'] == wid: w.setdefault('settings', {})['errorWorkflow'] = 'tamperedTAMPERED'
 json.dump(wf, open(f'{d}/workflows.json', 'w'))
-src = zipfile.ZipFile(f'{d}/entities.zip')
-items = [(i, src.read(i)) for i in src.infolist()]
-src.close()
-with zipfile.ZipFile(f'{d}/entities.zip', 'w', zipfile.ZIP_DEFLATED) as out:
-    for i, data in items:
-        if i.filename == 'workflowentity.jsonl':
-            lines = []
-            for line in data.decode().splitlines():
-                row = json.loads(line)
-                if row.get('id') == wid: row['settings'] = fix(row.get('settings'))
-                lines.append(json.dumps(row))
-            data = ('\n'.join(lines) + '\n').encode()
-        out.writestr(i.filename, data)
-print('tampered=yes')
 '@
 $tamperB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($tamperPy -replace "`r", '')))
 
@@ -119,11 +102,17 @@ for phase in $($Phases -join ' '); do
     -v "`$ram/in:/restore:ro" -v "`$n8nkey:/run/n8n_key:ro" -e N8N_ENCRYPTION_KEY_FILE=/run/n8n_key \
     --entrypoint node $Image -e 'setInterval(() => {}, 1e9)' >/dev/null
   if [ "`$phase" = entities ]; then
-    docker exec "`$c" n8n import:entities --inputDir=/restore >/dev/null 2>&1 && echo "`$phase:import=ok" || echo "`$phase:import=failed"
+    # import:entities unpacks the zip into its input directory, so it gets a writable copy in the throwaway's tmpfs.
+    # --truncateTables: a fresh n8n seeds a user, roles and settings during its migrations, and without the flag import:entities logs
+    # "Not all tables are empty, skipping import" and EXITS 0 having imported nothing (found 2026-11-12). It empties only this throwaway's
+    # tmpfs database. The exit code proves nothing here; the checks below look at what was restored.
+    imp='mkdir -m 700 /dev/shm/entities && cp /restore/entities.zip /dev/shm/entities/ && n8n import:entities --inputDir=/dev/shm/entities --truncateTables'
   else
-    docker exec "`$c" sh -c 'n8n import:workflow --input=/restore/workflows.json && n8n import:credentials --input=/restore/credentials.json' >/dev/null 2>&1 \
-      && echo "`$phase:import=ok" || echo "`$phase:import=failed"
+    imp='n8n import:workflow --input=/restore/workflows.json && n8n import:credentials --input=/restore/credentials.json'
   fi
+  # The import log stays in RAM; only its last 3 lines (n8n's message, cut to 200 characters) are shown on failure.
+  if docker exec "`$c" sh -c "`$imp" > "`$ram/import.log" 2>&1; then echo "`$phase:import=ok"; else
+    echo "`$phase:import=failed: `$(grep -v '^[[:space:]]*`$' "`$ram/import.log" | tail -3 | tr '\n' ' ' | cut -c1-200)"; fi
   docker exec "`$c" sh -c 'umask 077; n8n export:credentials --all --decrypted --output=/dev/shm/c.json >/dev/null 2>&1 || true'
   docker exec -i "`$c" node - < "`$ram/verify.js" | sed "s/^/`$phase:/" || echo "`$phase:verify=failed"
   docker exec "`$c" rm -f /dev/shm/c.json

@@ -762,6 +762,36 @@ The WAF was off inside 11:01-11:08 (10:01-10:08 UTC): between the last check bef
 
 **automation-review (2026-11-12): SHIP**, no CRITICAL. HIGH: nothing probes the public URL from outside (the heartbeat pings outward and stays green while the tunnel is down); moved into M7b-7 by the owner. MEDIUM: a replaced credentials file needs a cloudflared recreate (documented); cloudflared logs client IPs (bounded by Docker's log limits, runbook).
 
+### n8n in the offsite backup (M7b-6, 12 Nov)
+
+Times Berlin (CET, UTC+1). `infra/backup-offsite.sh` now also uploads `n8n-<UTC>.tar.age`: `workflows.json` (`export:workflow --all`), `credentials.json` (`export:credentials --all`, still encrypted with `N8N_ENCRYPTION_KEY`, never `--decrypted`) and `entities.zip` (`export:entities`, the only CLI export with data table rows). The plaintext export exists only in the n8n container's `/dev/shm` and a host `/dev/shm` directory, both removed on exit (checked empty after each run below). The ping comes after both uploads.
+
+**Spike, before building (names and sizes only):** `export:entities` writes one `entities.zip` (688 KB; executions excluded by default) with 34 `.jsonl` files, among them `data_table_user_<id>` for both tables, `user`, `project` and `workflowhistory`. Inside the zip, at least the workflow, credential, shared-credential and data table files are encrypted with the instance key (they begin with `U2FsdGVk`, CryptoJS's `Salted__`), so the archive is useless without `N8N_ENCRYPTION_KEY` even before `age`.
+
+**Server runs:**
+
+| Run | Result |
+|---|---|
+| `check-offsite-backup-recent.ps1` before the change | `[FAIL] n8n export uploaded in the last 1500 min - 0 upload line(s)`, `1 failed`, exit 1 |
+| `systemctl start backup-offsite` at 12:48:21 (11:48:21 UTC) | `uploaded automation-20261112T114821Z.dump.age (15408 bytes)`, `uploaded n8n-20261112T114821Z.tar.age (747896 bytes)`, `[PASS] backup finished, heartbeat pinged` |
+| `check-offsite-backup-recent.ps1` after it | `0 failed`, exit 0 (n8n: 1 upload line) |
+| Real script, unchanged, with a `docker` shim first in `PATH` that refuses only `export:` (12:49:07, 11:49:07 UTC) | `uploaded automation-...114907Z.dump.age`, `shim: n8n export refused`, exit 1, no ping line. **The owner read out `m7-server-backup` last ping 12:48:41, nothing at 12:49** |
+
+**Restore drill on the laptop, `scripts/check-n8n-offsite-restore.ps1`** with `n8n-20261112T114821Z.tar.age` downloaded from the bucket (747,896 bytes, the uploaded size). Two fresh throwaway n8n 2.45.6, `--network none`, database on tmpfs; the server's key from Bitwarden in a mode-600 WSL file (its SHA-256 compared with the server's key file: same; nothing else left the machines).
+
+| Run | Result |
+|---|---|
+| Right key | **15 steps, 0 failed**, exit 0. Both phases: 7 workflows with the expected `errorWorkflow`, the server's 5 credential names and types, **5 of 5 decrypt**. Entities also: `stripe_config` 1 row with its 5 columns, `stripe_heartbeat` 1 row (`heartbeat_url`) |
+| `-WrongKey` (random) | exit 1. entities: `bad decrypt`, nothing imported; json: imported, **0 of 5 decrypt** |
+| `-TamperErrorWorkflow` | **1 failed**, exit 1: json `3j0pWVoxvDY2sdO5|tamperedTAMPERED restored only`; entities still passes (its workflow file is encrypted, so only `workflows.json` is tampered; both phases share the check) |
+| A copy with one byte flipped | exit 1, `age: error: failed to decrypt and authenticate payload chunk`, 12 failed |
+
+**Finding: `import:entities` exits 0 and imports nothing into a fresh n8n.** Its log: "Not all tables are empty, skipping import" (n8n's migrations seed a user, roles and settings). The first right-key run showed it: import "ok", 0 workflows, 0 credentials, 0 data tables. The drill now passes `--truncateTables` (only the throwaway's tmpfs database) and never trusts the exit code. A real rebuild must do the same: runbook section 11.
+
+**Also found on the way:** the first value pasted into the drill key file was 218 characters (the server's key is 64); what it was is unknown. Found by comparing lengths and hashes, not values; the drill then failed exactly like `-WrongKey`, so a wrong key in a real restore looks like this too.
+
+**e2e `-Target Server` after the change: 55/55 checks passed, 0 failed**, exit 0 (its offsite backup step now includes `n8n export uploaded in the last 1500 min`).
+
 ## Safety guards
 
 Recorded 2026-11-03. One pattern list, `scripts/lib/destructive-patterns.json` (10 patterns, each with a harmless `echo` sample), read by the helper guard (`scripts/lib/destructive-guard.ps1`, in `wsl-sh.ps1` and `server-sh.ps1`) and the PreToolUse hook (`scripts/hooks/destructive-guard.mjs`).
