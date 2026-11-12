@@ -34,6 +34,13 @@ if ! sudo cmp -s "$keyfile" secrets/n8n_encryption_key; then
 fi
 shred -u "$keyfile"
 
+# The tunnel credentials (M7b-5b) are copied in by the owner from Bitwarden. cloudflared runs as uid 65532 (the image's user) and the
+# compose secret is a bind mount that keeps host ownership, so the file belongs to that uid, mode 400. After replacing the file:
+# docker compose -f docker-compose.prod.yml up -d --force-recreate cloudflared (up -d alone sees no change).
+[ -s secrets/cloudflared.json ] || fail "secrets/cloudflared.json is missing: copy the tunnel credentials JSON from Bitwarden"
+sudo chown 65532:65532 secrets/cloudflared.json
+sudo chmod 0400 secrets/cloudflared.json
+
 "${compose[@]}" up -d
 # install writes a new file, but a running container keeps the old one mounted, and up -d sees no compose change. Recreate n8n.
 if [ "$key_changed" = 1 ]; then "${compose[@]}" up -d --force-recreate n8n; fi
