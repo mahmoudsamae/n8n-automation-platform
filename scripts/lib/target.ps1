@@ -51,7 +51,15 @@ function Invoke-TargetSh($Target, [string]$Script) {
 function Invoke-TargetSql($Target, [string]$Sql) {
     if ($Target.Name -eq 'Laptop') {
         # SQL on stdin, so neither PowerShell nor wsl quoting touches it.
-        $out = $Sql | wsl -d Ubuntu docker exec -i postgres psql -U automation -d automation -tA -v ON_ERROR_STOP=1
+        # Exit -1 is wsl.exe itself failing to connect into the VM, before psql starts: each call opens an hv_sock channel that needs a
+        # 512 KB contiguous kernel allocation, and the 2 GB WSL VM sometimes has none free (journal: "page allocation failure: order:7"
+        # in hvs_probe, 9 and 12 Nov; e2e's 2 s polling hit it twice). Only that code is retried, visibly; psql errors (1-3) fail at once.
+        for ($try = 1; $try -le 3; $try++) {
+            $out = $Sql | wsl -d Ubuntu docker exec -i postgres psql -U automation -d automation -tA -v ON_ERROR_STOP=1
+            if ($LASTEXITCODE -ne -1) { break }
+            Write-Host "      [warn] wsl.exe could not connect to the VM (exit -1, try $try of 3)" -ForegroundColor Yellow
+            Start-Sleep -Seconds 2
+        }
     } else {
         # A quoted heredoc: bash expands nothing inside it.
         if ($Sql -match '(?m)^E2E_SQL$') { throw 'SQL contains the heredoc delimiter' }

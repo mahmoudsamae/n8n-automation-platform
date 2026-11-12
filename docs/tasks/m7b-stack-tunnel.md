@@ -1,6 +1,6 @@
 # M7b: stack and tunnel (spec)
 
-Status: plan approved by the owner on 2026-11-08. Built PR by PR; each PR updates this file's status line. M7b-1 merged (PR #16). M7b-2 merged (PR #17). M7b-3 built and proven 2026-11-09, applied on the server, exposed ping URLs rotated 2026-11-11 (PR #18). M7b-5 is built as 5a (server n8n, still private) and 5b (tunnel, WAF, Stripe: goes public). Design background: `docs/tasks/m7-server.md`.
+Status: plan approved by the owner on 2026-11-08. Built PR by PR; each PR updates this file's status line. M7b-1 merged (PR #16). M7b-2 merged (PR #17). M7b-3 built and proven 2026-11-09, applied on the server, exposed ping URLs rotated 2026-11-11 (PR #18). M7b-4 built 2026-11-12 (laptop e2e 52/52, server preflight 19/22 with the 3 workflow checks pending 5a; PR open). The server uses its own Stripe sandbox "New business sandbox" (owner decision 2026-11-11). M7b-5 is built as 5a (server n8n, still private) and 5b (tunnel, WAF, Stripe: goes public). Design background: `docs/tasks/m7-server.md`.
 
 ## Goal
 
@@ -59,7 +59,7 @@ Every new check is seen failing once and then passing, and the runner's summary 
 
 ### M7b-4: `-Target Laptop|Server` for e2e and the scripts
 - `scripts/lib/target.ps1`.
-- In server mode, e2e opens its own SSH tunnel on ports 15678 (n8n) and 18025 (Mailpit).
+- In server mode, e2e opens its own SSH tunnel on ports 25678 (n8n) and 28025 (Mailpit); 15678/18025 are left to the admin tunnel.
 - No `stripe listen` there. The bad-signature and stale-timestamp tests go to the public URL.
 - The backup checks read the `backup-offsite` journal.
 - The laptop mode stays the default and stays green.
