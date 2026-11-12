@@ -15,6 +15,7 @@ function Write-Step([string]$Name, [bool]$Ok, [string]$Detail = '') {
 
 $sh = @'
 echo "ok=$(journalctl -u backup-offsite --since "-__MIN__ min" --no-pager -o cat 2>/dev/null | grep -c '^\[PASS\] backup finished')"
+echo "n8n=$(journalctl -u backup-offsite --since "-__MIN__ min" --no-pager -o cat 2>/dev/null | grep -cE '^uploaded n8n-[0-9]{8}T[0-9]{6}Z\.tar\.age ')"
 echo "last=$(journalctl -u backup-offsite --no-pager -o short-iso 2>/dev/null | grep '\[PASS\] backup finished' | tail -1 | cut -d' ' -f1)"
 echo "timer=$(systemctl is-active backup-offsite.timer)"
 echo "result=$(systemctl show backup-offsite.service -p Result --value)"
@@ -25,6 +26,9 @@ function Get-One([string]$Key) { $v = @($out | Where-Object { "$_" -like "$Key=*
 
 $ok = Get-One 'ok'
 Write-Step "offsite backup succeeded in the last $MaxAgeMinutes min" ($ok -match '^\d+$' -and [int]$ok -ge 1) "$ok success line(s); last success $(if (Get-One 'last') { Get-One 'last' } else { 'never' })"
+# Since M7b-6 the same run also uploads the n8n export (workflows, credentials, data tables) before it pings.
+$n8n = Get-One 'n8n'
+Write-Step "n8n export uploaded in the last $MaxAgeMinutes min" ($n8n -match '^\d+$' -and [int]$n8n -ge 1) "$n8n upload line(s)"
 Write-Step 'backup-offsite.timer is active' ((Get-One 'timer') -eq 'active') (Get-One 'timer')
 Write-Step 'the last backup-offsite run did not fail' ((Get-One 'result') -eq 'success') "Result=$(Get-One 'result')"
 
