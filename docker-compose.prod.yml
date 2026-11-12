@@ -26,7 +26,10 @@ services:
       # N8N_WEBHOOK_URL, not WEBHOOK_URL: 2.45.6 logs the old name as deprecated at start.
       - N8N_WEBHOOK_URL=https://invoice.mahmud-alhussen.de/
       - N8N_PROXY_HOPS=1
+      # In 2.45.6 the /api/v1 routes stay mounted either way (server.js); this flag only turns off API-key auth and key creation,
+      # and the Swagger UI has its own flag. What keeps /api off the internet is the tunnel allowlist and the WAF rule.
       - N8N_PUBLIC_API_DISABLED=true
+      - N8N_PUBLIC_API_SWAGGERUI_DISABLED=true
     secrets:
       - n8n_encryption_key
     volumes:
