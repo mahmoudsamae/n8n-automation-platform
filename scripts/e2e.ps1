@@ -299,9 +299,19 @@ limit 1
         Write-Host "`n== 6. Resend the same event ==" -ForegroundColor Cyan
         $intakeBefore = (Get-IntakeExecutions $T $eventId).LastId
         $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'   # the CLI's stderr hint line is an error under 'Stop' in PowerShell 5.1
-        $null = & $stripeExe events resend $eventId --project-name $T.StripeProject 2>$null
+        # Without --webhook-endpoint the CLI re-delivers only to a stripe listen session; on the server it answers "No CLI endpoints found"
+        # in the JSON and still exits 0 (M7b-5b). So the server names its endpoint (found by URL, ids differ per sandbox), and the step
+        # fails on an error in the response, not only on the exit code. The response is never printed: it holds the customer's email.
+        $resendArgs = @('events', 'resend', $eventId, '--project-name', $T.StripeProject)
+        $resendNote = ''
+        if ($Target -eq 'Server') {
+            $endpoints = @(((& $stripeExe get /v1/webhook_endpoints --project-name $T.StripeProject 2>$null) -join "`n" | ConvertFrom-Json).data | Where-Object { $_.url -eq $IntakeUrl })
+            if ($endpoints.Count -eq 1) { $resendArgs += @('--webhook-endpoint', $endpoints[0].id); $resendNote = ", endpoint $($endpoints[0].id)" } else { $resendNote = ", $($endpoints.Count) endpoints with this URL" }
+        }
+        $resendRaw = (@(& $stripeExe @resendArgs 2>$null) -join "`n")
         $resendExit = $LASTEXITCODE; $ErrorActionPreference = $old
-        Write-Step 'stripe events resend succeeded' ($resendExit -eq 0) "exit $resendExit"
+        $resendError = try { [string](($resendRaw | ConvertFrom-Json).error.message) } catch { 'response is not JSON' }
+        Write-Step 'stripe events resend succeeded' ($resendExit -eq 0 -and -not $resendError) ("exit $resendExit$resendNote" + $(if ($resendError) { ", error: $resendError" }))
         if ($Target -eq 'Laptop') {
             # Wait until the listener has forwarded the event a second time (matched in the log, never printed).
             $pattern = "-->.*\[$eventId\]"

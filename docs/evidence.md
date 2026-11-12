@@ -721,6 +721,47 @@ Times Berlin (CET, UTC+1). Stripe cannot reach the server until 5b, so real even
 **automation-review on the branch (2026-11-12): SHIP**, no CRITICAL or HIGH. Two MEDIUM, both handled in this PR: `send-signed-event.ps1` wrote the event body (customer name, email, address) to a world-readable temp file on the server (now `umask 077`; re-run: 200, row `ignored`, no temp file left); `import-workflows.ps1` deactivates a live workflow until publish and restart, so after 5b Stripe deliveries in that window get 404 and are retried by Stripe (documented in the script).
 Final runs: laptop `e2e.ps1` **53/53 checks passed, 0 failed**; server `e2e.ps1 -Target Server -PreflightOnly` **22/22 checks passed, 0 failed (preflight only)**, port 25678 free afterwards.
 
+### Server public through Cloudflare (M7b-5b, 12 Nov)
+
+Times Berlin (CET, UTC+1). `cloudflared` `2026.10.7` (arm64, runs as uid 65532, 128m) on the compose network; credentials file `65532:65532 400`. First connection 10:53:27 (09:53:27 UTC), 4 tunnel connections registered.
+
+**Ingress, static, before going public:** `cloudflared tunnel ingress validate` -> OK; `ingress rule` inside the pinned image: only `/webhook/stripe-intake` matches rule #0 (`http://n8n:5678`); `/webhook/stripe-intake/`, `/../rest/settings`, `stripe-intakex`, `/webhook-test/...`, `/rest/settings`, `/`, uppercase and another host match the 404 catch-all.
+
+**`scripts/check-tunnel-allowlist.ps1`, from the laptop over the internet** (25 probes: editor, REST, login, public API, MCP, metrics, `webhook-test`, other webhooks, forms, Mailpit API, traversal and encoding variants, other methods; plus 3 encoded aliases and the bad-signature control):
+
+| Run | Result |
+|---|---|
+| WAF on, `-ExpectWaf` (baseline) | 26 steps, **0 failed**, all `403 waf`; control `400 {"error":"invalid signature"}` |
+| WAF rule disabled by the owner, `-ExpectWaf` | **25 failed**, exit 1: every probe `404 tunnel` instead of `403 waf` |
+| WAF off, default | **0 failed**, exit 0: 21 x `404 tunnel`, control 400; the 3 aliases print as WARN |
+| WAF off, tunnel catch-all changed to `http_status:200` on the server (safe sabotage, owner choice) | **21 failed**, exit 1, every probe `200 other` |
+| WAF off, config restored from git (`git checkout`, clean tree) | **0 failed**, exit 0 |
+| WAF re-enabled by the owner, `-ExpectWaf` | **0 failed**, exit 0, 27 x `403 waf` plus the 3 aliases |
+
+The WAF was off inside 11:01-11:08 (10:01-10:08 UTC): between the last check before the owner was asked and the first one after "on".
+
+**Finding: cloudflared matches the decoded path.** With the WAF off, `POST /webhook%2fstripe-intake` and `/%77ebhook/stripe-intake` pass the regex `^/webhook/stripe-intake$` and reach n8n, which routes on the raw path: POST -> n8n's `Cannot POST` 404, GET -> 200, the editor's static shell (1708 bytes; its assets, `/rest` and login stay refused). With the WAF on all three get 403. So the WAF is required, not a spare. The check counts the aliases only with `-ExpectWaf` (what e2e runs) and prints them as WARN otherwise. No fix inside cloudflared (its path matching always decodes).
+
+**Finding: `N8N_PUBLIC_API_DISABLED` does not unmount the API in 2.45.6.** `server.js:211-212` always mounts the routers; the flag feeds `isApiKeyAuthEnabled()` (API-key auth and key creation off). From the server host after the change: `/api/v1/workflows` 401, `/api/v1/docs/` 200 ("n8n Public API UI"). `N8N_PUBLIC_API_SWAGGERUI_DISABLED=true` added: docs 404, workflows still 401. Right after a restart both gave 404 for a few seconds (routes not mounted yet), so the settled state was read about 25 s later.
+**`WEBHOOK_URL` is deprecated in 2.45.6** (start log: "Use N8N_WEBHOOK_URL instead"); compose uses `N8N_WEBHOOK_URL`, the warning is gone. n8n's environment holds the three names (names only checked).
+
+**Stripe's late retry from 5a.** `evt_1UauBOIhNo8F48zzxmms9PW2` (created 10:20:38, 09:20:38 UTC; stored in 5a by a signed post) had `pending_webhooks=1` before the tunnel. Baseline Intake execution 30. Stripe's retry arrived as Intake exec **107** at 11:19:59 (10:19:59 UTC), status success, node **`Respond 200 Duplicate`** ran (`Received`, `500` and `400` did not). Afterwards `pending_webhooks=0`; the event still has 1 row, `done`, attempts 1, 1 invoice, 3 side effects.
+
+**Resend on the server.** e2e's first full server run: **54/55**, the one FAIL `resend reached the Intake`. `stripe events resend <id>` without `--webhook-endpoint` answers `invalid_request_error: No CLI endpoints found to retry delivery...` and exits 0, so e2e's "resend succeeded" step had passed falsely. With `--webhook-endpoint we_...` the resend reached the Intake in 5 s, still 1 row, `done`. Fix: on the server e2e looks the endpoint up by URL and passes it; the step also fails on an `error` in the response. Seen failing: the same plain response gives old rule PASS, new rule FAIL.
+
+**e2e `-Target Server`, real Stripe delivery through Cloudflare:** **55/55 checks passed, 0 failed**, exit 0. Event `evt_1Uav5xIhNo8F48zz2ooTyzjc` -> `done`, attempts 1, `INV-2026-000003`; resend through endpoint `we_1UajF8IhNo8F48zzzFP7vnpE` reached the Intake, still 1 row, 1 invoice, 1 email, 1 Telegram; the allowlist check (`-ExpectWaf`), cloudflared in the stack rules (15.5 MiB of 128) and the stale-timestamp check against the public URL all passed. No `whsec_` in the output.
+
+**Healthchecks `m7-server-n8n`, n8n down.** Last heartbeat: Monitor exec 102 at 11:17:33 (10:17:33 UTC). `docker stop n8n` at 11:22:24 (10:22:24 UTC); the public URL then answered 502. **The owner read out `m7-server-n8n` down at 11:32** (10:32 UTC; expected 11:32:33 = last ping + period 5 + grace 10). `docker start n8n` at 11:43:07 (10:43:07 UTC), healthz 200 ten seconds later; first Monitor run after it: exec 123 at 11:47:33 (10:47:33 UTC), `Heartbeat Ping` ran. **The owner read out up at 11:47:33** (email confirmed), the same second as exec 123's start.
+
+**Also seen failing or re-run:**
+- `check-prod-stack.ps1` with cloudflared stopped (during the n8n stop, so no extra outage): `[FAIL] cloudflared running`, `2 failed` (n8n too), exit 1; started again, 3 connections in 6 s.
+- `bootstrap.sh` a second time: exit 0, every container `Running`, nothing recreated, credentials file still `65532:65532 400`.
+- Laptop `e2e.ps1` with the new resend rule: **53/53 checks passed, 0 failed** (`stripe events resend succeeded - exit 0`, forwarded by `stripe listen`, reached the Intake).
+
+**Unplanned: laptop check `stripe-pipeline` down 12:13, up 12:28 (owner report).** Cause (owner): the idle laptop went to sleep. Confirmed from the logs: laptop Monitor exec 4140 at 11:58:26 (10:58:26 UTC) was the last run; Windows Kernel-Power 42 "standby, cause: System Idle" at 12:02:00; Power-Troubleshooter 1 "woke up" at 12:27:41; next Monitor run exec 4145 at 12:28:26 (11:28:26 UTC). WSL was suspended, not stopped: journal boot 0 since 09:50:03, all containers started 09:50 with 0 restarts and no OOM kill, and WSL's `uptime -s` (10:15:41) lags the real boot by 25.6 min, the time it spent suspended. Not a server issue; the server's `m7-server-n8n` was unaffected.
+
+**automation-review (2026-11-12): SHIP**, no CRITICAL. HIGH: nothing probes the public URL from outside (the heartbeat pings outward and stays green while the tunnel is down); moved into M7b-7 by the owner. MEDIUM: a replaced credentials file needs a cloudflared recreate (documented); cloudflared logs client IPs (bounded by Docker's log limits, runbook).
+
 ## Safety guards
 
 Recorded 2026-11-03. One pattern list, `scripts/lib/destructive-patterns.json` (10 patterns, each with a harmless `echo` sample), read by the helper guard (`scripts/lib/destructive-guard.ps1`, in `wsl-sh.ps1` and `server-sh.ps1`) and the PreToolUse hook (`scripts/hooks/destructive-guard.mjs`).

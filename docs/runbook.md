@@ -208,7 +208,7 @@ With `false` no document is sent and `telegram_document` is not required for `do
 
 ## 11. Server
 
-The M7 server: OCI Always Free, `VM.Standard.A1.Flex`, 1 OCPU, 4 GB, Ubuntu 24.04, region `eu-frankfurt-1`. No public traffic and no workflows yet (M7b). Design: `docs/tasks/m7-server.md`. The server has its own secrets; nothing from the laptop's `.env`. Never click Upgrade or Pay As You Go in OCI.
+The M7 server: OCI Always Free, `VM.Standard.A1.Flex`, 1 OCPU, 4 GB, Ubuntu 24.04, region `eu-frankfurt-1`. Runs the 7 workflows; public only at `https://invoice.mahmud-alhussen.de/webhook/stripe-intake` since M7b-5b (see "Public hostname" below). Design: `docs/tasks/m7-server.md`. The server has its own secrets; nothing from the laptop's `.env`. Never click Upgrade or Pay As You Go in OCI.
 
 **Access, only over Tailscale.** `ssh -i "$HOME\.ssh\oci_m7" ubuntu@m7-server`. Nothing publishes a port, so admin UIs go through an SSH tunnel to fixed container IPs:
 `ssh -i "$HOME\.ssh\oci_m7" -L 5678:172.30.0.10:5678 -L 8025:172.30.0.11:8025 ubuntu@m7-server`, then http://localhost:5678 (n8n) and http://localhost:8025 (Mailpit). From scripts: `scripts\server-sh.ps1 -Script '...'` (base64, so no quoting problems).
@@ -220,7 +220,17 @@ powershell -File scripts\check-prod-stack.ps1                               # st
 powershell -File scripts\check-public-ports.ps1 -Mode Tailnet -Ip <public-ip>   # Tailscale SSH works, public SSH does not answer (no nmap)
 powershell -File scripts\check-imds-blocked.ps1                             # containers cannot reach the metadata service; DNS, HTTPS and the host still work
 powershell -File scripts\check-db-role.ps1                                  # n8n_app holds exactly migration 007's privileges and logs in over TCP
+powershell -File scripts\check-tunnel-allowlist.ps1 -ExpectWaf              # from outside: only POST /webhook/stripe-intake gets through, the WAF 403s the rest
 ```
+
+**Public hostname (M7b-5b).** `cloudflared` (locally-managed tunnel `m7-invoice`, id in `infra/cloudflared.yml`) dials out, so nothing listens on the public IP. Two layers, told apart by status code:
+- cloudflared's ingress (`infra/cloudflared.yml`, in git): only path `^/webhook/stripe-intake$` goes to `http://n8n:5678`, everything else gets an empty 404. It matches the DECODED path, so encoded aliases (`/webhook%2fstripe-intake`) reach n8n, and a GET there returns the editor's static shell (no data). It also cannot filter methods.
+- The Cloudflare WAF custom rule `m7-invoice-allowlist` (dashboard, zone `mahmud-alhussen.de`): 403 for anything but `POST /webhook/stripe-intake`, aliases included. It is required, not optional. Bot Fight Mode stays off (it would challenge Stripe).
+- Credentials: `secrets/cloudflared.json` (Bitwarden, as text), owner uid 65532 (the image's user), mode 400, set by `bootstrap.sh`. After replacing it: `docker compose -f docker-compose.prod.yml up -d --force-recreate cloudflared`.
+- n8n: `N8N_WEBHOOK_URL`, `N8N_PROXY_HOPS=1`, `N8N_PUBLIC_API_DISABLED=true` and `N8N_PUBLIC_API_SWAGGERUI_DISABLED=true`. In 2.45.6 `/api/v1` stays mounted anyway (the flag only turns off API-key auth), so the two layers are what keep it off the internet.
+- cloudflared logs each request with the client IP (personal data); Docker's log size limits bound how long it stays. Not watched from outside yet: the heartbeat stays green while the tunnel is down (M7b-7 adds a probe).
+- n8n down or restarting: the URL answers 502 and Stripe retries (sandbox: a few times over some hours). `import-workflows.ps1 -Restart` has the same window.
+- Stripe endpoint `m7-server-invoice` in "New business sandbox" (2 event types). A resend for the server needs `--webhook-endpoint we_...` (without it the CLI answers "No CLI endpoints found" and still exits 0); e2e looks the id up by URL.
 
 **Backups.** `backup-offsite.timer` runs nightly at 03:00 (Persistent): `pg_dump -Fc` piped into `age`, uploaded with a write-only pre-authenticated URL to the bucket `m7-backups`, then a ping to the Healthchecks check `m7-server-backup` (period 1 day, grace 6 h). Any failure means no ping. Keeps 14 days (bucket lifecycle rule). Postgres only: `n8n_data` is not backed up yet (M7b). Run one by hand: `bash ~/n8n-workflows/infra/backup-offsite.sh`. Logs: `journalctl -u backup-offsite`.
 The private key is only on the laptop (`~/.config/age/m7-backup.key` in WSL) and in Bitwarden (`M7 age backup private key`). Lose both and the backups are unreadable.
@@ -233,7 +243,7 @@ The private key is only on the laptop (`~/.config/age/m7-backup.key` in WSL) and
 3. Compute > Instances > Create: `m7-server`, Ubuntu 24.04, `VM.Standard.A1.Flex`, 1 OCPU, 4 GB, `m7-vcn` public subnet, public IPv4, paste `oci_m7.pub`. Advanced options > Management: paste `infra/cloud-init.yaml`, replacing `__TAILSCALE_AUTHKEY__` in that box only. "Out of host capacity": try the other availability domains, then later off-peak. No scripts that hammer the API.
 4. Instance > Oracle Cloud Agent: Compute Instance Monitoring enabled. Tailscale > Machines > `m7-server`: disable key expiry. Keys: the auth key is used.
 5. On the VM: `ssh-keygen -t ed25519 -f ~/.ssh/repo_deploy -N "" -C m7-server-deploy`. GitHub > Settings > Deploy keys: add the `.pub`, write access off. Clone with `git clone -c core.sshCommand="ssh -i ~/.ssh/repo_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new" git@github.com:mahmoudsamae/n8n-automation-platform.git ~/n8n-workflows`.
-6. `cd ~/n8n-workflows && cp infra/env.example .env && chmod 600 .env`, fill it from the Bitwarden items `M7 server POSTGRES_PASSWORD`, `M7 server N8N_ENCRYPTION_KEY`, `M7 OCI backup write URL`, `M7 Healthchecks backup ping URL`, `M7 server n8n_app DB password`. Do not generate new values. No migrations: the restore creates the tables.
+6. `cd ~/n8n-workflows && cp infra/env.example .env && chmod 600 .env`, fill it from the Bitwarden items `M7 server POSTGRES_PASSWORD`, `M7 server N8N_ENCRYPTION_KEY`, `M7 OCI backup write URL`, `M7 Healthchecks backup ping URL`, `M7 server n8n_app DB password`, and the tunnel credentials JSON into `secrets/cloudflared.json`. Do not generate new values. No migrations: the restore creates the tables.
 7. `bash infra/bootstrap.sh`. Laptop: `powershell -File scripts\server-restore.ps1 -File <newest .age>` (refuses a database that has tables), then the restore check above.
 8. Over Tailscale: `bash infra/harden-ssh.sh`. Then the three health checks.
 9. Only after green: terminate the old VM, tick **Permanently delete the attached boot volume** (the free limit counts it), remove its deploy key. Update the testing form's IP with Oracle before any further scan.

@@ -1,6 +1,6 @@
 # M7b: stack and tunnel (spec)
 
-Status: plan approved by the owner on 2026-11-08. Built PR by PR; each PR updates this file's status line. M7b-1 merged (PR #16). M7b-2 merged (PR #17). M7b-3 built and proven 2026-11-09, applied on the server, exposed ping URLs rotated 2026-11-11 (PR #18). M7b-4 merged (PR #19). M7b-5a built 2026-11-12 (workflows imported on the server, still private; server preflight 22/22; PR open). The server uses its own Stripe sandbox "New business sandbox" (owner decision 2026-11-11). M7b-5 is built as 5a (server n8n, still private) and 5b (tunnel, WAF, Stripe: goes public). Design background: `docs/tasks/m7-server.md`.
+Status: plan approved by the owner on 2026-11-08. Built PR by PR; each PR updates this file's status line. M7b-1 merged (PR #16). M7b-2 merged (PR #17). M7b-3 built and proven 2026-11-09, applied on the server, exposed ping URLs rotated 2026-11-11 (PR #18). M7b-4 merged (PR #19). M7b-5a merged (PR #20). M7b-5b built 2026-11-12 (public through cloudflared and the WAF, server e2e 55/55 with a real delivery through Cloudflare; PR open). The server uses its own Stripe sandbox "New business sandbox" (owner decision 2026-11-11). M7b-5 is built as 5a (server n8n, still private) and 5b (tunnel, WAF, Stripe: goes public). Design background: `docs/tasks/m7-server.md`.
 
 ## Goal
 
@@ -66,7 +66,7 @@ Every new check is seen failing once and then passing, and the runner's summary 
 
 ### M7b-5: stack, tunnel, Stripe (goes public)
 - `cloudflared` (`2026.10.7`, 128m). Ingress allows only path `^/webhook/stripe-intake$` on the host; everything else gets 404.
-- n8n settings: `WEBHOOK_URL`, `N8N_PROXY_HOPS=1`, `N8N_PUBLIC_API_DISABLED=true`, `N8N_EDITOR_BASE_URL`.
+- n8n settings: `WEBHOOK_URL`, `N8N_PROXY_HOPS=1`, `N8N_PUBLIC_API_DISABLED=true`, `N8N_EDITOR_BASE_URL`. As built: `N8N_WEBHOOK_URL` (2.45.6 deprecates the old name), plus `N8N_PUBLIC_API_SWAGGERUI_DISABLED=true` (the API flag does not unmount `/api/v1` in 2.45.6); no `N8N_EDITOR_BASE_URL` (the editor is reached only through the SSH tunnel).
 - Workflows imported with their ids kept. Credentials are new on the server; laptop secrets are never copied.
 - `scripts/check-tunnel-allowlist.ps1`, run from outside:
   - Editor, REST, MCP, `webhook-test`, other webhooks, Mailpit and traversal variants are refused.
@@ -87,6 +87,7 @@ Every new check is seen failing once and then passing, and the runner's summary 
 - Measure idle and during PDF renders. Oracle P95 after 7 days.
 - The 9 Nov laptop OOM kill of n8n (`docs/evidence.md`): `scripts/measure-n8n-memory.ps1` reads n8n's cgroup `memory.peak` and `oom_kill` count in four phases (idle 30 min, 10 PDF payments, the `n8n export` checks, a check during a payment); explicit pruning (`EXECUTIONS_DATA_MAX_AGE=168`, `EXECUTIONS_DATA_PRUNE_MAX_COUNT=5000`; default is already on, 336 h); a peak above 75% of the limit raises the limit and/or caps V8, then measure again.
 - `check-prod-stack.ps1` fails on n8n `OOMKilled`, a restart or an `oom_kill`. Fail once with a throwaway 64m container.
+- Outside probe of `https://invoice.mahmud-alhussen.de` (automation-review HIGH on M7b-5b, owner decision 2026-11-12: in M7b-7, not later): the `m7-server-n8n` heartbeat pings outward and stays green while the tunnel or the WAF is broken, and the sandbox gives up on a delivery after a few retries. A probe POSTs a bad signature through Cloudflare and expects 400; anything else alerts a human. Fail once with cloudflared stopped.
 - `check-prod-stack.ps1 -MinUsedPercent 22` (Oracle reclaims below 20%) and the sum of `mem_limit` at most 75% of RAM.
 - e2e defaults to the server; CLAUDE.md updated; the laptop stack is stopped by the owner.
 - `automation-review` SHIP.
