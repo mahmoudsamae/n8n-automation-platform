@@ -1,0 +1,15 @@
+# Ingress of the locally-managed tunnel m7-invoice (M7b-5b). Mounted read-only into the cloudflared container (docker-compose.prod.yml).
+# Layer 1 of 2: only the Stripe webhook path reaches n8n; everything else gets an empty 404 from cloudflared itself.
+# Layer 2 is the Cloudflare WAF custom rule m7-invoice-allowlist (403 for anything but POST /webhook/stripe-intake), set in the dashboard.
+# cloudflared matches `path` as a regex against the path only (no query string). Proof from outside: scripts\check-tunnel-allowlist.ps1.
+# The tunnel id is not a secret; the credentials JSON is (secrets/cloudflared.json, never in git).
+tunnel: 019c9b23-ee72-4cf3-92b3-73ffa1ac9376
+credentials-file: /run/secrets/cloudflared_credentials
+no-autoupdate: true
+
+ingress:
+  - hostname: invoice.mahmud-alhussen.de
+    path: ^/webhook/stripe-intake$
+    service: http://n8n:5678
+  # cloudflared requires the last rule to match everything.
+  - service: http_status:404

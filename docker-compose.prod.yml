@@ -22,6 +22,14 @@ services:
       # The key comes from a file, so it is in no process environment and not in docker inspect. infra/bootstrap.sh writes the file
       # from .env (owner uid 1000, mode 400). Without an explicit key n8n would generate one inside its volume.
       - N8N_ENCRYPTION_KEY_FILE=/run/secrets/n8n_encryption_key
+      # Public through cloudflared since M7b-5b. cloudflared is exactly one proxy hop, so n8n takes the client IP from X-Forwarded-For.
+      # N8N_WEBHOOK_URL, not WEBHOOK_URL: 2.45.6 logs the old name as deprecated at start.
+      - N8N_WEBHOOK_URL=https://invoice.mahmud-alhussen.de/
+      - N8N_PROXY_HOPS=1
+      # In 2.45.6 the /api/v1 routes stay mounted either way (server.js); this flag only turns off API-key auth and key creation,
+      # and the Swagger UI has its own flag. What keeps /api off the internet is the tunnel allowlist and the WAF rule.
+      - N8N_PUBLIC_API_DISABLED=true
+      - N8N_PUBLIC_API_SWAGGERUI_DISABLED=true
     secrets:
       - n8n_encryption_key
     volumes:
@@ -68,6 +76,21 @@ services:
       - --webhook-disable
       - --api-timeout=30s
 
+  cloudflared:
+    # Dials out to Cloudflare, so nothing listens on the public IP. Ingress rules (the path allowlist) are in git: infra/cloudflared.yml.
+    # Runs as uid 65532 (the image's user): infra/bootstrap.sh gives it the credentials file, mode 400.
+    image: cloudflare/cloudflared:2026.10.7
+    container_name: cloudflared
+    restart: unless-stopped
+    mem_limit: 128m
+    command: tunnel --config /etc/cloudflared/config.yml run
+    volumes:
+      - ./infra/cloudflared.yml:/etc/cloudflared/config.yml:ro
+    secrets:
+      - cloudflared_credentials
+    depends_on:
+      - n8n
+
 networks:
   default:
     ipam:
@@ -82,3 +105,6 @@ secrets:
   n8n_encryption_key:
     # Written by infra/bootstrap.sh from N8N_ENCRYPTION_KEY in .env. Never in git (secrets/ is ignored).
     file: ./secrets/n8n_encryption_key
+  cloudflared_credentials:
+    # The tunnel's credentials JSON, copied by the owner from Bitwarden. Never in git.
+    file: ./secrets/cloudflared.json
