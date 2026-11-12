@@ -790,6 +790,12 @@ Times Berlin (CET, UTC+1). `infra/backup-offsite.sh` now also uploads `n8n-<UTC>
 
 **Also found on the way:** the first value pasted into the drill key file was 218 characters (the server's key is 64); what it was is unknown. Found by comparing lengths and hashes, not values; the drill then failed exactly like `-WrongKey`, so a wrong key in a real restore looks like this too.
 
+**Hung export, found in the automation-review:** a `Type=oneshot` unit has no start timeout by default, so a hung export would block every later backup (Healthchecks would alert after about 30 h), and bash skips its `EXIT` trap when SIGTERM kills it, leaving the plaintext in `/dev/shm`. Fixed: `TimeoutStartSec=15min` and `trap 'exit 143' TERM INT`. Proof (13:35:49, 12:35:49 UTC): a transient unit with `TimeoutStartSec=40s` ran the real script, with a shim that let the real export run and then hung. At 32 s the container's `/dev/shm` held the 3 export files; systemd: "start operation timed out. Terminating", exit status **143**, `Failed with result 'timeout'`; afterwards host and container `/dev/shm` **empty**, no ping line. **Not run:** the same test without the trap (it would leave plaintext on the server that then needs a scripted cleanup; the permission check refused that cleanup).
+
+**Retention covers the new objects:** the owner read out the bucket's lifecycle rule `delete-after-14-days`: enabled, target objects, delete after 14 days, "No filter specified, rule applied to all objects".
+
+**Memory during a backup run** (13:33:20-13:33:41, 12:33:20-12:33:41 UTC, `memory.current` of n8n's cgroup every 0.5 s, 41 samples): idle 501 MB, peak **775 MB of 1536 (50%)**, `oom_kill` 0 before and after. The three export commands each start a second n8n process in the container. M7b-7 measures the worse case (an export during a payment).
+
 **e2e `-Target Server` after the change: 55/55 checks passed, 0 failed**, exit 0 (its offsite backup step now includes `n8n export uploaded in the last 1500 min`).
 
 ## Safety guards
