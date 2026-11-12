@@ -5,6 +5,10 @@
 #   tunnel    cloudflared's catch-all in infra/cloudflared.yml: 404 with an EMPTY body. n8n's own 404s have a body, so they never count.
 # Default: every probe must be refused by one of the two. -ExpectWaf: every probe must be refused by the WAF (it sits in front, so with the
 # rule on, cloudflared never sees them). Control in both modes: a POST with a bad signature reaches the Intake and gets 400.
+# Known gap of cloudflared alone (found in M7b-5b): it matches its path regex against the DECODED path, so an encoded alias of the allowed
+# path (/webhook%2fstripe-intake, /%77ebhook/stripe-intake) reaches n8n, which routes on the raw path: 404 for POST, the editor's static
+# shell for GET (no data: its assets, /rest and login are refused). Only the WAF refuses those, so they count only with -ExpectWaf
+# (what e2e runs) and print as WARN in the default mode.
 # Prove it can fail: disable the WAF rule -> -ExpectWaf FAILs while the default still passes (cloudflared alone holds); with the rule
 # still off, a catch-all of http_status:200 in the tunnel config -> the default FAILs (docs/evidence.md, M7b-5b).
 # curl.exe with --path-as-is, because PowerShell's web cmdlets resolve "/../" before sending and the traversal probes would test nothing.
@@ -42,8 +46,9 @@ $probes = @(
     @('GET', '/api/v1/messages'), @('GET', '/api/v1/info'),
     @('POST', '/webhook/stripe-intake/'), @('POST', '/webhook/stripe-intakex'), @('POST', '/webhook/Stripe-Intake'),
     @('POST', '/webhook/stripe-intake/../../rest/settings'), @('POST', '/webhook/stripe-intake/%2e%2e/%2e%2e/rest/settings'),
-    @('POST', '/webhook%2fstripe-intake'), @('POST', '/webhook/stripe-intake%2f..%2f..%2frest%2fsettings')
+    @('POST', '/webhook/stripe-intake%2f..%2f..%2frest%2fsettings')
 )
+$aliases = @(@('POST', '/webhook%2fstripe-intake'), @('GET', '/webhook%2fstripe-intake'), @('GET', '/%77ebhook/stripe-intake'))
 # The allowed path with another method reaches n8n when only cloudflared is in front (it cannot filter methods), so only the WAF refuses it.
 if ($ExpectWaf) { $probes += @(@('GET', '/webhook/stripe-intake'), @('PUT', '/webhook/stripe-intake'), @('DELETE', '/webhook/stripe-intake')) }
 
@@ -55,6 +60,12 @@ try {
         $ok = if ($ExpectWaf) { $r.Layer -eq 'waf' } else { $r.Layer -in 'waf', 'tunnel' }
         $layers[$r.Layer] = 1 + [int]$layers[$r.Layer]
         Write-Step "$($p[0]) $($p[1]) refused ($want)" $ok "$($r.Code) $($r.Layer)"
+    }
+    foreach ($p in $aliases) {
+        $r = Invoke-Probe $p[0] $p[1]
+        $layers[$r.Layer] = 1 + [int]$layers[$r.Layer]
+        if ($ExpectWaf -or $r.Layer -eq 'waf') { Write-Step "$($p[0]) $($p[1]) (encoded alias) refused (WAF 403)" ($r.Layer -eq 'waf') "$($r.Code) $($r.Layer)" }
+        else { Write-Host "[WARN] $($p[0]) $($p[1]) (encoded alias) reaches n8n without the WAF - $($r.Code) $($r.Layer), known gap, not counted" -ForegroundColor Yellow }
     }
     # The control: the allowed request still reaches the Intake, which refuses the signature. A stale t= is fine, the signature fails first.
     $r = Invoke-Probe 'POST' '/webhook/stripe-intake' @('Stripe-Signature: t=1,v1=00')

@@ -126,7 +126,8 @@ try {
         Write-Step 'docker compose reachable' $false $_.Exception.Message
     }
 
-    foreach ($svc in 'postgres', 'mailpit', 'n8n', 'gotenberg') {
+    $services = @('postgres', 'mailpit', 'n8n', 'gotenberg') + $(if ($Target -eq 'Server') { @('cloudflared') } else { @() })
+    foreach ($svc in $services) {
         Write-Step "container '$svc' running" ($running -contains $svc)
     }
 
@@ -197,6 +198,8 @@ try {
         $null = Invoke-Check 'stack rules: no published port, pinned images, memory limits (check-prod-stack.ps1)' { & "$PSScriptRoot\check-prod-stack.ps1" }
         $null = Invoke-Check 'containers cannot reach the metadata service (check-imds-blocked.ps1)' { & "$PSScriptRoot\check-imds-blocked.ps1" }
         $null = Invoke-Check 'n8n_app has exactly its privileges and logs in over TCP (check-db-role.ps1)' { & "$PSScriptRoot\check-db-role.ps1" }
+        # M7b-5b, from outside: only POST /webhook/stripe-intake gets through, everything else the WAF's 403 (both layers on).
+        $null = Invoke-Check 'public hostname: only the Intake path gets through, the WAF refuses the rest (check-tunnel-allowlist.ps1 -ExpectWaf)' { & "$PSScriptRoot\check-tunnel-allowlist.ps1" -ExpectWaf }
     }
 
     # M7b-3: workflows cannot read the environment (N8N_BLOCK_ENV_ACCESS_IN_NODE=true, no secret or config name in n8n's environment); the
