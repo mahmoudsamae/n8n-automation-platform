@@ -37,6 +37,9 @@ function Get-Target([ValidateSet('Laptop', 'Server')][string]$Name = 'Laptop') {
         StripeAccountName = 'New business sandbox'
         # Credential and data table ids differ per n8n instance; the .sdk.ts files carry the laptop's. Ids are not secret.
         IdMap = Join-Path $root 'infra\n8n-ids.server.json'
+        # The visitor demo (M7c): Closed while the Cloudflare WAF rule m7-demo-closed is on. Go-live flips the rule Off AND this line to
+        # 'Open' (in the same PR), so e2e's check-tunnel-allowlist.ps1 expects the state the public really is in.
+        Demo = 'Closed'
         Tunnel = [pscustomobject]@{ Host = 'ubuntu@m7-server'; KeyFile = (Join-Path $HOME '.ssh\oci_m7'); N8nPort = 25678; MailpitPort = 28025; N8n = '25678:172.30.0.10:5678'; Mailpit = '28025:172.30.0.11:8025' }
     }
 }
