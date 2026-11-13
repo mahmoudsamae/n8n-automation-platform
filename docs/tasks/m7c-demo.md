@@ -1,10 +1,18 @@
 # M7c: visitor demo (spec)
 
-Status: plan approved by the owner on 2026-11-12. Built PR by PR; each PR updates this status line. M7c-1 (this spec, README portfolio link) merged (PR #24). M7c-2 (migration 008, nightly reset, `check-db-role.ps1` for both roles) built, PR open. Design background: `docs/tasks/m7-server.md`; M7b: `docs/tasks/m7b-stack-tunnel.md`. Every claim marked **[VERIFY]** is checked in the M7c-3 spike and the result recorded here before code relies on it.
+Status: plan approved by the owner on 2026-11-12. Built PR by PR; each PR updates this status line. M7c-1 (this spec, README portfolio link) merged (PR #24). M7c-2 (migration 008, nightly reset, `check-db-role.ps1` for both roles) built and proven on the server 2026-11-13 (`docs/evidence.md`, "Nightly demo reset"). **Scope cut on 2026-11-13 (below) overrides the sections after it.** Design background: `docs/tasks/m7-server.md`; M7b: `docs/tasks/m7b-stack-tunnel.md`. Every claim marked **[VERIFY]** is checked in the M7c-3 spike and the result recorded here before code relies on it.
 
 ## Goal
 
 A recruiter opens `https://invoice.mahmud-alhussen.de`, pays with Stripe's test card `4242 4242 4242 4242`, and within about 30 seconds sees **their own** result page: a timeline of the pipeline steps, the invoice PDF, a preview of the email (caught by Mailpit, never sent to a real address) and a preview of the owner's Telegram text. The demo stays closed to the public until the owner has filled the Impressum and Datenschutz pages.
+
+## Scope cut (owner, 2026-11-13)
+
+A portfolio demo, not a product. Security and data rules stay strict (secrets, WAF and tunnel allowlist, the reset role, never mail a real address); everything else is cut.
+- **Kept:** landing page, checkout, result page by token, daily cap 50 (with one owner alert per day), the kill switch rule `m7-demo-closed`, the nightly reset, Impressum and Datenschutz, execution-data retention (no successful executions saved for workflows that see visitor data, 48 h max age).
+- **Dropped:** the Playwright visitor e2e (the owner tests once by hand from a phone), the per-IP limit and the Cloudflare rate limiting rule, `check-legal-pages.ps1`, the memory measurement (one `free -m` at the end), the Telegram name mask: **no Telegram for demo payments** (option C; the result page shows the text Render Invoice builds, labelled as a preview).
+- Without the per-IP limit, `demo_sessions.ip_hash` would be data without a purpose, and `is_test` existed only for the e2e exemption: migration 009 (owner) removes both.
+- Fail-once proofs only for the reset (done) and the allowlist. One automation-review at the end. M7c-3 to M7c-6 go into one PR with M7c-2.
 
 ## Owner decisions (2026-11-12)
 

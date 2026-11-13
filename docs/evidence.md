@@ -856,6 +856,21 @@ Times UTC. **Config applied by the owner** (one command from their PowerShell: `
 
 **The IP is in no repo file or commit.** The current IPv4 (fetched with `curl -4`, never printed), dotted and dashed, searched in: the working tree including untracked files, every file at each of 112 commits on all refs, all commit messages, the titles, bodies, comments and review comments of all 22 PRs. **0 hits everywhere.** Positive controls with the same code: the hostname in 12 files and 116 file-at-commit hits, `M7b-6` in 5 commit messages, `Generated with` in the PR text, so each search can find. `check-docs.ps1` also fails on any public IPv4 in tracked files.
 
+## M7c demo
+
+### Nightly demo reset (M7c-2, 2026-11-13)
+
+Migration 008 run by the owner on the server (ended `COMMIT`). Spec: `docs/tasks/m7c-demo.md`. Times Berlin (UTC+1).
+
+**Role.** `scripts\check-db-role.ps1` before 008: `10 failed` (`role demo_reset exists` FAIL, `n8n_app` missing its grants on `demo_sessions` and `demo_limit_alerts`). After 008: `0 failed`. `n8n_app` 11 table grants plus 1 column grant (`demo_sessions.checkout_session_id:UPDATE`). `demo_reset` 12 grants (SELECT and DELETE on six tables), no sequences or columns, no CREATE or TEMPORARY, owns nothing, and cannot log in over TCP.
+
+**Reset.** `demo-reset.timer` installed and active (next run 02:30). `scripts\check-demo-reset.ps1`, `0 failed`:
+- Guard 1, an old `processing` row: the service fails, the journal names the guard, events 29 -> 29.
+- Guard 2, a `livemode = true` payload: the service fails, the journal names the guard, events 29 -> 29.
+- `demo_reset` refused: UPDATE, INSERT, reading `invoice_number_seq`, a temp table.
+- A fresh offsite backup first (`backup=ok`), then the real run. Journal counts: before 29 events / 19 invoices / 53 side effects / 1 replay / 2 demo sessions / 1 limit alert; after 2 / 1 / 1 / 0 / 1 / 0 (left: the rows seeded as new, under 5 minutes old). Seeded old rows and their invoice, side effect and replay gone; new rows kept; `invoice_number_seq` 17 -> 17; `mailpit messages after reset: 0`; `demo reset finished, heartbeat pinged`.
+- The first real run deleted the M7b sandbox rows on the server (owner approved on 2026-11-13); their evidence is recorded above.
+
 ## Safety guards
 
 Recorded 2026-11-03. One pattern list, `scripts/lib/destructive-patterns.json` (10 patterns, each with a harmless `echo` sample), read by the helper guard (`scripts/lib/destructive-guard.ps1`, in `wsl-sh.ps1` and `server-sh.ps1`) and the PreToolUse hook (`scripts/hooks/destructive-guard.mjs`).
