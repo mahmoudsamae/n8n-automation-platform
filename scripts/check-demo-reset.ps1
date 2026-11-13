@@ -77,9 +77,9 @@ insert into invoices (invoice_number, event_id, customer_email, amount_cents, cu
          ('INV-TEST-' || :'p' || '-NEW', :'p' || '_new', 'demo-00000000@demo.mahmud-alhussen.de', 3000, 'eur');
 insert into side_effects (event_id, kind) values (:'p' || '_old', 'email'), (:'p' || '_new', 'email');
 insert into event_replays (event_id, reason) values (:'p' || '_old', 'check-demo-reset seed');
-insert into demo_sessions (token_hash, demo_email, ip_hash, is_test, created_at)
-  values (sha256(convert_to(:'p' || '_old', 'UTF8')), 'demo-' || left(md5(:'p' || 'old'), 8) || '@demo.mahmud-alhussen.de', sha256(convert_to('192.0.2.1', 'UTF8')), true, now() - interval '10 minutes'),
-         (sha256(convert_to(:'p' || '_new', 'UTF8')), 'demo-' || left(md5(:'p' || 'new'), 8) || '@demo.mahmud-alhussen.de', sha256(convert_to('192.0.2.1', 'UTF8')), true, now());
+insert into demo_sessions (token_hash, demo_email, created_at)
+  values (sha256(convert_to(:'p' || '_old', 'UTF8')), 'demo-' || left(md5(:'p' || 'old'), 8) || '@demo.mahmud-alhussen.de', now() - interval '10 minutes'),
+         (sha256(convert_to(:'p' || '_new', 'UTF8')), 'demo-' || left(md5(:'p' || 'new'), 8) || '@demo.mahmud-alhussen.de', now());
 insert into demo_limit_alerts (day) values (date '2000-01-01') on conflict do nothing;
 -- The guard row: processing, received 10 minutes ago, claimed now (so the Processor's 10-minute release leaves it alone).
 insert into stripe_events (event_id, event_type, status, attempts, payload, received_at, pending_since, claimed_at)

@@ -870,6 +870,7 @@ Migration 008 run by the owner on the server (ended `COMMIT`). Spec: `docs/tasks
 - `demo_reset` refused: UPDATE, INSERT, reading `invoice_number_seq`, a temp table.
 - A fresh offsite backup first (`backup=ok`), then the real run. Journal counts: before 29 events / 19 invoices / 53 side effects / 1 replay / 2 demo sessions / 1 limit alert; after 2 / 1 / 1 / 0 / 1 / 0 (left: the rows seeded as new, under 5 minutes old). Seeded old rows and their invoice, side effect and replay gone; new rows kept; `invoice_number_seq` 17 -> 17; `mailpit messages after reset: 0`; `demo reset finished, heartbeat pinged`.
 - The first real run deleted the M7b sandbox rows on the server (owner approved on 2026-11-13); their evidence is recorded above.
+- Healthchecks `m7-demo-reset` (period 1 day, grace 6 h) green with its last ping at 11:01 (10:01 UTC), the proof's real run (owner report).
 
 ## Safety guards
 
