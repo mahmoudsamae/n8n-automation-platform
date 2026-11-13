@@ -162,6 +162,19 @@ const respondStatus = respond('Respond 200 Status', 200, expr('{{ JSON.stringify
 const respondNotReady = respond('Respond 409 Not Ready', 409, '{"error": "not_ready"}', [1960, 440]);
 const respondPreview = respond('Respond 200 Preview', 200, expr('{{ JSON.stringify($json) }}'), [2620, 300]);
 const respondUnavailable = respond('Respond 502 Unavailable', 502, '{"error": "preview_unavailable"}', [2620, 520]);
+// After the 502 went out, the run fails on purpose, so the Error Handler alerts the owner (throttled per workflow and node, 15 min).
+// Only reached when the invoice email is recorded as sent, so Mailpit or the renderer is really broken (automation-review, M7c).
+const failUnavailable = node({
+  type: 'n8n-nodes-base.stopAndError',
+  version: 1,
+  config: {
+    name: 'Fail: Preview Unavailable',
+    parameters: { errorMessage: 'Demo Result answered 502: the email, PDF or Telegram preview could not be built (Mailpit or Render Invoice)' },
+    position: [2840, 520],
+  },
+  output: [{}],
+});
+const unavailable = respondUnavailable.to(failUnavailable);
 
 // Mailpit: the message with this invoice's subject sent to this session's recipient. 5 s timeout, 2 tries per call.
 const mailpitHelpers = `const base = 'http://mailpit:8025/api/v1';
@@ -306,7 +319,7 @@ export default workflow('demo-result', 'Demo Result')
                     invoiceReady
                       .onTrue(
                         wantsPdf
-                          .onTrue(fetchPdf.onError(respondUnavailable).to(respondPdf))
+                          .onTrue(fetchPdf.onError(unavailable).to(respondPdf))
                           .onFalse(renderInput.to(renderInvoice.onError(respondUnavailable).to(buildPreview.onError(respondUnavailable).to(respondPreview)))),
                       )
                       .onFalse(respondNotReady),

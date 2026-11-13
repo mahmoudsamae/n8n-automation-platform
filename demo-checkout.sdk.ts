@@ -236,6 +236,20 @@ const respondUnavailable = node({
   output: [{}],
 });
 
+// After the 502 went out, the run fails on purpose, so the Error Handler alerts the owner (throttled: one alert per workflow and node per
+// 15 min). Without it a revoked key or a Stripe outage would only ever show visitors "unavailable" (automation-review, M7c).
+const failUnavailable = node({
+  type: 'n8n-nodes-base.stopAndError',
+  version: 1,
+  config: {
+    name: 'Fail: Checkout Unavailable',
+    parameters: { errorMessage: 'Demo Checkout answered 502: the Stripe session could not be created or stored' },
+    position: [2400, 400],
+  },
+  output: [{}],
+});
+const unavailable = respondUnavailable.to(failUnavailable);
+
 const respondDailyLimit = node({
   type: 'n8n-nodes-base.respondToWebhook',
   version: 1.5,
@@ -335,7 +349,7 @@ export default workflow('demo-checkout', 'Demo Checkout')
     slotReserved
       .onTrue(
         createSession
-          .onError(respondUnavailable)
+          .onError(unavailable)
           .to(checkSession.to(sessionOk.onTrue(storeSessionId.onError(respondUnavailable).to(respondUrl)).onFalse(respondUnavailable))),
       )
       .onFalse(respondDailyLimit.to(recordCapAlert.to(firstCapToday.onTrue(capAlertInput.to(sendCapAlert))))),

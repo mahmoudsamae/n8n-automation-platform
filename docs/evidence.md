@@ -891,6 +891,9 @@ Times Berlin (UTC+1), UTC in parentheses.
 
 **e2e (Server): 57/57 passed, 0 failed**, including drift `no differences from live` for `demo-checkout.sdk.ts` and `demo-result.sdk.ts`, their `errorWorkflow`, `saveDataSuccessExecution=none` on the six workflows that see visitor data, and both roles in `check-db-role.ps1`.
 
+**automation-review (one, at the end):** FIX FIRST with two HIGH. (1) The 502 paths of both demo workflows ended the run successfully, so a revoked Stripe key or a broken Mailpit would only ever show visitors "unavailable". Fixed: a Stop and Error node after each 502 fails the run, so the Error Handler alerts (throttled, 15 min per workflow and node). Seen working: with Mailpit stopped, a preview request got `502 preview_unavailable`; Demo Result execution 2038 `error` (12:31:06 / 11:31:06 UTC), Stripe Error Handler 2040 `success`, Stripe Send Alert 2041 `success` (Telegram; the alert email could not go out with Mailpit stopped); drift check: both demo files `no differences from live`. (2) The daily-cap branch (429, zero-row detection, the one owner alert) had never run (`demo_limit_alerts` empty): proven separately (below).
+Side finding: `scripts\n8n-executions.ps1` reads the LAPTOP's n8n container (it has no server target), which looked like the server's n8n was down; the server was fine (no create or destroy event, `OOMKilled=false`).
+
 **Memory (one reading after e2e):** `free -m` used 1,205 of 3,895 MB = 30.9 % without cache (Oracle's metric; above 22 %). `docker stats`: n8n 412 MiB / 1.5 GiB, gotenberg 217 / 512 MiB, postgres 38 / 512, mailpit 22 / 128, cloudflared 16 / 128, demo-web 11 / 48.
 
 ## Safety guards
