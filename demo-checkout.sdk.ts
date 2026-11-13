@@ -62,7 +62,8 @@ const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
 // A generated address on the owner's domain (no MX): Checkout shows it prefilled, the invoice email only ever reaches Mailpit.
 const demoEmail = 'demo-' + crypto.randomBytes(4).toString('hex') + '@demo.mahmud-alhussen.de';
 const origin = 'https://invoice.mahmud-alhussen.de';
-const form = new URLSearchParams({
+// Form-encoded by hand: the Code node's sandbox has no URLSearchParams (ReferenceError, seen 2026-11-13).
+const fields = {
   mode: 'payment',
   'payment_method_types[0]': 'card',
   'line_items[0][quantity]': '1',
@@ -77,8 +78,9 @@ const form = new URLSearchParams({
   'metadata[demo]': 'true',
   // Adaptive Pricing converts the currency and made the amount check fail (checkout_amount_mismatch on the laptop sandbox).
   'adaptive_pricing[enabled]': 'false',
-});
-return [{ json: { token_hash: tokenHash, demo_email: demoEmail, daily_limit: limit, form: form.toString() } }];`,
+};
+const form = Object.entries(fields).map(([k, v]) => encodeURIComponent(k) + '=' + encodeURIComponent(v)).join('&');
+return [{ json: { token_hash: tokenHash, demo_email: demoEmail, daily_limit: limit, form } }];`,
     },
     position: [640, 400],
   },
