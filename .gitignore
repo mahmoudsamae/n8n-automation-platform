@@ -25,3 +25,6 @@ Thumbs.db
 .vscode/
 .idea/
 node_modules/
+
+# Playwright MCP snapshots and screenshots (can hold Cloudflare block pages with the caller's IP)
+.playwright-mcp/

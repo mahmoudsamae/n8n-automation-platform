@@ -1,6 +1,6 @@
 #!/bin/bash
 # Brings the M7 server to its running state from a clone of this repository. Safe to run twice: the second run changes nothing.
-# Run: bash infra/bootstrap.sh   Exit 0 = stack up and backup timer active, 1 = stopped with a reason (nothing started).
+# Run: bash infra/bootstrap.sh   Exit 0 = stack up, backup and demo reset timers active, 1 = stopped with a reason (nothing started).
 # It never restores and never runs migrations: the server has no key to decrypt backups, and migrations are the owner's.
 set -euo pipefail
 
@@ -14,7 +14,7 @@ fail() { echo "[FAIL] $1" >&2; exit 1; }
 mode="$(stat -c %a .env)"
 [ "$mode" = "600" ] || fail ".env has mode $mode, must be 600"
 # Names only in the output, never a value.
-for name in POSTGRES_PASSWORD N8N_ENCRYPTION_KEY BACKUP_PAR_URL BACKUP_HEARTBEAT_URL; do
+for name in POSTGRES_PASSWORD N8N_ENCRYPTION_KEY BACKUP_PAR_URL BACKUP_HEARTBEAT_URL DEMO_RESET_HEARTBEAT_URL; do
   grep -Eq "^$name=.+" .env || fail "$name is empty or missing in .env"
 done
 [ -s infra/backup-recipient.pub ] || fail "infra/backup-recipient.pub is missing"
@@ -47,7 +47,7 @@ if [ "$key_changed" = 1 ]; then "${compose[@]}" up -d --force-recreate n8n; fi
 
 # Only touch systemd when a unit file really changed.
 changed=0
-for unit in backup-offsite.service backup-offsite.timer docker-imds-block.service; do
+for unit in backup-offsite.service backup-offsite.timer demo-reset.service demo-reset.timer docker-imds-block.service; do
   if ! cmp -s "infra/$unit" "/etc/systemd/system/$unit"; then
     sudo install -m 0644 "infra/$unit" "/etc/systemd/system/$unit"
     changed=1
@@ -56,6 +56,9 @@ done
 if [ "$changed" = 1 ]; then sudo systemctl daemon-reload; fi
 sudo systemctl enable --now backup-offsite.timer >/dev/null 2>&1
 systemctl is-active --quiet backup-offsite.timer || fail "backup-offsite.timer is not active"
+# The nightly demo reset (M7c-2). Before migration 008 its role does not exist: the run fails, sends no ping, and Healthchecks alerts.
+sudo systemctl enable --now demo-reset.timer >/dev/null 2>&1
+systemctl is-active --quiet demo-reset.timer || fail "demo-reset.timer is not active"
 # Containers must not reach the metadata service (user-data is readable there). restart, not start: it re-applies the rules every run.
 sudo systemctl enable docker-imds-block.service >/dev/null 2>&1
 sudo systemctl restart docker-imds-block.service

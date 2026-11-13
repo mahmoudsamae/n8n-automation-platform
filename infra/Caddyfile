@@ -1,0 +1,72 @@
+# demo-web (M7c, docs/tasks/m7c-demo.md): serves the static demo pages from /srv (demo/site in git) and proxies exactly two API paths to
+# n8n. Everything else gets an empty 404. Third allowlist layer, after the Cloudflare WAF rules and cloudflared's path list.
+# TLS ends at Cloudflare; cloudflared reaches this over the compose network on plain HTTP.
+{
+	admin off
+	auto_https off
+}
+
+:80 {
+	# CSP: no inline script, no third-party anything. style-src allows inline styles only because the invoice email (shown in a sandboxed
+	# srcdoc iframe, which inherits this policy) uses style attributes; scripts stay blocked there by the iframe sandbox and by script-src.
+	header {
+		Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-src 'self'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'"
+		Referrer-Policy "no-referrer"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		-Server
+	}
+
+	@legal path /impressum /datenschutz
+	header @legal X-Robots-Tag "noindex, nofollow"
+
+	# The API: POST only, small JSON bodies. The token travels in the body, never in the URL.
+	@checkout {
+		method POST
+		path /api/demo/checkout
+	}
+	handle @checkout {
+		request_body {
+			max_size 4KB
+		}
+		rewrite * /webhook/demo-checkout
+		reverse_proxy n8n:5678
+	}
+	@result {
+		method POST
+		path /api/demo/result
+	}
+	handle @result {
+		request_body {
+			max_size 4KB
+		}
+		rewrite * /webhook/demo-result
+		reverse_proxy n8n:5678
+	}
+
+	@pages {
+		method GET HEAD
+		path / /r /impressum /datenschutz
+	}
+	handle @pages {
+		rewrite / /index.html
+		rewrite /r /r.html
+		rewrite /impressum /impressum.html
+		rewrite /datenschutz /datenschutz.html
+		file_server
+	}
+
+	@assets {
+		method GET HEAD
+		path_regexp ^/assets/[a-z0-9.-]+\.(css|js|svg)$
+	}
+	handle @assets {
+		header Cache-Control "public, max-age=300"
+		file_server
+	}
+
+	handle {
+		respond 404
+	}
+}

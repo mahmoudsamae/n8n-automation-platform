@@ -25,7 +25,7 @@ $root = Split-Path -Parent $PSScriptRoot
 $tool = Join-Path $PSScriptRoot 'sdk-drift'
 if (-not (Test-Path (Join-Path $tool 'node_modules\@n8n\workflow-sdk'))) { throw 'run scripts\check-sdk-drift.ps1 once first (it installs the pinned SDK)' }
 
-$order = 'WO2ebvkZGK5NxzVo', 'c2NT8k3JGpuS3r6I', '3dvdSRSD6ObBVsxy', 'Yel7C2ufq8wR5s3W', '3j0pWVoxvDY2sdO5', 'ylR2t9B0ZAH1cLfq', 'yeSlEcPp87vCJT7D'
+$order = 'WO2ebvkZGK5NxzVo', 'c2NT8k3JGpuS3r6I', '3dvdSRSD6ObBVsxy', 'Yel7C2ufq8wR5s3W', 'ylR2t9B0ZAH1cLfq', '3j0pWVoxvDY2sdO5', 'dmCk7Qp2Lx9RtV4a', 'dmRs3Hn8Wz5KyB6e', 'yeSlEcPp87vCJT7D'
 $Only = @($Only | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 $all = Get-Workflows
 $selected = @($order | ForEach-Object { $id = $_; $all | Where-Object { $_.Id -eq $id } } | Where-Object { $Only.Count -eq 0 -or $Only -contains $_.Id })

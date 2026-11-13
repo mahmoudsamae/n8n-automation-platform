@@ -11,5 +11,16 @@ ingress:
   - hostname: invoice.mahmud-alhussen.de
     path: ^/webhook/stripe-intake$
     service: http://n8n:5678
+  # M7c visitor demo: pages, assets and the two API paths go to demo-web (Caddy), which allowlists again (infra/Caddyfile).
+  # n8n's demo webhooks (/webhook/demo-*) are never reachable directly: only Caddy proxies to them.
+  - hostname: invoice.mahmud-alhussen.de
+    path: ^/(r|impressum|datenschutz)?$
+    service: http://demo-web:80
+  - hostname: invoice.mahmud-alhussen.de
+    path: ^/assets/[a-z0-9.-]+\.(css|js|svg)$
+    service: http://demo-web:80
+  - hostname: invoice.mahmud-alhussen.de
+    path: ^/api/demo/(checkout|result)$
+    service: http://demo-web:80
   # cloudflared requires the last rule to match everything.
   - service: http_status:404
