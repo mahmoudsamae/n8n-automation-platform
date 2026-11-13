@@ -51,7 +51,7 @@ free -m
 $out = @(& "$PSScriptRoot\server-sh.ps1" -Script $sh)
 if ($LASTEXITCODE -ne 0) { Write-Step 'server reachable over Tailscale' $false "exit $LASTEXITCODE"; Write-Output '1 failed'; exit 1 }
 
-$expected = 'n8n', 'postgres', 'mailpit', 'gotenberg', 'cloudflared'
+$expected = 'n8n', 'postgres', 'mailpit', 'gotenberg', 'cloudflared', 'demo-web'
 $containers = @($out | Where-Object { "$_" -like 'container=*' } | ForEach-Object {
     $p = "$_".Substring(10) -split '\|'
     [pscustomobject]@{ Name = $p[0]; Status = $p[1]; Image = $p[2]; Ports = $p[3]; Memory = $p[4]; OomKilled = $p[5]; Restarts = $p[6]; OomKills = $p[7] }

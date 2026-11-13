@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Ihr Demo-Ergebnis</title>
+  <link rel="stylesheet" href="/assets/style.css">
+  <script src="/assets/result.js" defer></script>
+</head>
+<body>
+<main>
+  <h1>Ihr Demo-Ergebnis / Your demo result</h1>
+  <div id="state" class="note ok" role="status" aria-live="polite">Lädt … / Loading …</div>
+
+  <div class="card">
+    <h2 style="margin-top:0">Ablauf / Pipeline</h2>
+    <ol id="steps" class="steps"></ol>
+  </div>
+
+  <div id="results" class="hidden">
+    <div class="card">
+      <h2 style="margin-top:0">Rechnung (PDF) / Invoice</h2>
+      <p>Dasselbe PDF, das an die E-Mail angehängt wurde. / The same PDF that was attached to the email.</p>
+      <button id="pdf" type="button" class="secondary">PDF herunterladen / Download PDF</button>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0">E-Mail-Vorschau / Email preview</h2>
+      <p class="lead" id="email-meta"></p>
+      <p>Abgefangen von Mailpit, einem internen Testpostfach: nichts wurde an eine echte Adresse gesendet. / Caught by Mailpit, an internal test inbox: nothing went to a real address.</p>
+      <iframe id="email-frame" class="preview-frame" sandbox title="E-Mail-Vorschau"></iframe>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0">Telegram-Vorschau / Telegram preview</h2>
+      <p>Bei echten Zahlungen erhält der Betreiber diese Nachricht. Für Demo-Zahlungen wird sie nicht gesendet, nur hier gezeigt. / For real payments the owner gets this message; for demo payments it is only shown here, not sent.</p>
+      <pre id="telegram-text" class="telegram"></pre>
+    </div>
+  </div>
+
+  <p><a href="/">Zurück zur Startseite / Back to the start</a> · Alle Demo-Daten werden jede Nacht um 02:30 gelöscht. / All demo data is deleted nightly at 02:30.</p>
+</main>
+<footer>
+  <a href="/impressum">Impressum</a><a href="/datenschutz">Datenschutz</a><a href="https://github.com/mahmoudsamae/n8n-automation-platform">GitHub</a>
+</footer>
+</body>
+</html>

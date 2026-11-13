@@ -82,6 +82,22 @@ services:
       - --webhook-disable
       - --api-timeout=30s
 
+  demo-web:
+    # The visitor demo (M7c): static pages from git (demo/site, read-only) and exactly two API paths proxied to n8n (infra/Caddyfile).
+    # Third allowlist layer after the WAF and cloudflared. Admin API and automatic HTTPS are off: TLS ends at Cloudflare.
+    image: caddy:2.10.2-alpine
+    container_name: demo-web
+    restart: unless-stopped
+    mem_limit: 48m
+    volumes:
+      - ./infra/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./demo/site:/srv:ro
+    depends_on:
+      - n8n
+    networks:
+      default:
+        ipv4_address: 172.30.0.12
+
   cloudflared:
     # Dials out to Cloudflare, so nothing listens on the public IP. Ingress rules (the path allowlist) are in git: infra/cloudflared.yml.
     # Runs as uid 65532 (the image's user): infra/bootstrap.sh gives it the credentials file, mode 400.

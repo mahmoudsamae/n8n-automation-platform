@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rechnungs-Pipeline Demo</title>
+  <meta name="description" content="Stripe-Zahlung zu Rechnung, E-Mail und PDF in Sekunden: eine Live-Demo mit n8n und PostgreSQL (Stripe-Sandbox).">
+  <link rel="stylesheet" href="/assets/style.css">
+  <script src="/assets/start.js" defer></script>
+</head>
+<body>
+<main>
+  <p class="lang">Deutsch</p>
+  <h1>Von der Zahlung zur Rechnung in Sekunden</h1>
+  <p class="lead">Diese Demo zeigt eine Automatisierung, die eine Stripe-Zahlung empfängt, die Signatur prüft, das Ereignis genau einmal speichert und daraus eine deutsche Rechnung mit PDF erzeugt und per E-Mail versendet. Sie läuft mit n8n und PostgreSQL auf einem eigenen Server. Alles passiert in der Stripe-Sandbox: es fließt kein echtes Geld.</p>
+  <ol class="flow" aria-label="Ablauf">
+    <li>Stripe Checkout</li><li>Webhook (Signatur)</li><li>PostgreSQL</li><li>Rechnung + PDF</li><li>E-Mail (Mailpit)</li>
+  </ol>
+
+  <div class="card">
+    <h2 style="margin-top:0">Selbst ausprobieren</h2>
+    <p>Mit der Stripe-Testkarte bezahlen, danach erscheint Ihre eigene Ergebnisseite mit Ablauf, PDF und E-Mail-Vorschau.</p>
+    <p class="testcard"><span class="mono">4242 4242 4242 4242</span></p>
+    <p>Ablaufdatum: ein beliebiges in der Zukunft, CVC: beliebig. Name: ein beliebiger, z. B. <em>Erika Mustermann</em>. Die E-Mail-Adresse ist bereits vorausgefüllt und erfunden: die Rechnung geht nur an ein internes Testpostfach (Mailpit), nie an eine echte Adresse.</p>
+    <p><button id="start" type="button">Demo-Zahlung starten</button></p>
+    <div id="start-msg" class="hidden" role="status" aria-live="polite"></div>
+  </div>
+
+  <p class="lang">English</p>
+  <h2 style="margin-top:4px">From payment to invoice in seconds</h2>
+  <p>This demo receives a Stripe payment, verifies its signature, stores the event exactly once and turns it into a German invoice with a PDF, sent by email, using n8n and PostgreSQL on a small server. Everything runs in Stripe's sandbox: no real money moves. Pay with the test card <span class="mono">4242 4242 4242 4242</span> (any future date, any CVC, any name) and you get your own result page. The email address is prefilled and made up; the invoice only reaches an internal test inbox (Mailpit).</p>
+
+  <h2>Mehr / More</h2>
+  <p>Quellcode, Tests und Fehlerfälle / Source, tests and failure cases: <a href="https://github.com/mahmoudsamae/n8n-automation-platform">github.com/mahmoudsamae/n8n-automation-platform</a><br>
+  Portfolio: <a href="https://mahmud-alhussen.de">mahmud-alhussen.de</a></p>
+</main>
+<footer>
+  <a href="/impressum">Impressum</a><a href="/datenschutz">Datenschutz</a><a href="https://github.com/mahmoudsamae/n8n-automation-platform">GitHub</a>
+</footer>
+</body>
+</html>
