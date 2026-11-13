@@ -156,11 +156,11 @@ try {
     }
 
     # M5: errorWorkflow lives only in n8n (not in the .sdk.ts files), so check it on the live workflows.
-    $null = Invoke-Check 'errorWorkflow correct on all 7 workflows' { & "$PSScriptRoot\check-error-workflows.ps1" -Target $Target }
+    $null = Invoke-Check 'errorWorkflow correct on all 9 workflows' { & "$PSScriptRoot\check-error-workflows.ps1" -Target $Target }
 
     # Every change to a live workflow must be exported to its .sdk.ts file: compile each file and diff it against the live export.
     # On the server the laptop's credential and data table ids are mapped first (infra\n8n-ids.server.json).
-    $null = Invoke-Check 'all 7 .sdk.ts files match their live workflows' { & "$PSScriptRoot\check-sdk-drift.ps1" -Target $Target }
+    $null = Invoke-Check 'all 9 .sdk.ts files match their live workflows' { & "$PSScriptRoot\check-sdk-drift.ps1" -Target $Target }
 
     $null = & node "$PSScriptRoot\sdk-drift\apply-ids.test.mjs"
     Write-Step 'apply-ids.mjs: maps credential and data table ids, refuses unknown ids' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
@@ -204,7 +204,7 @@ try {
         # The stack rules (no published port, pinned images, memory limits), the metadata block and the n8n_app role, as in runbook section 11.
         $null = Invoke-Check 'stack rules: no published port, pinned images, memory limits (check-prod-stack.ps1)' { & "$PSScriptRoot\check-prod-stack.ps1" }
         $null = Invoke-Check 'containers cannot reach the metadata service (check-imds-blocked.ps1)' { & "$PSScriptRoot\check-imds-blocked.ps1" }
-        $null = Invoke-Check 'n8n_app has exactly its privileges and logs in over TCP (check-db-role.ps1)' { & "$PSScriptRoot\check-db-role.ps1" }
+        $null = Invoke-Check 'n8n_app and demo_reset have exactly their privileges, only n8n_app logs in over TCP (check-db-role.ps1)' { & "$PSScriptRoot\check-db-role.ps1" }
         # M7b-5b, from outside: only POST /webhook/stripe-intake gets through, everything else the WAF's 403 (both layers on).
         $null = Invoke-Check "public hostname: only the Intake path and the demo ($($T.Demo)) get through, the WAF refuses the rest (check-tunnel-allowlist.ps1 -ExpectWaf -Demo $($T.Demo))" { & "$PSScriptRoot\check-tunnel-allowlist.ps1" -ExpectWaf -Demo $T.Demo }
     }

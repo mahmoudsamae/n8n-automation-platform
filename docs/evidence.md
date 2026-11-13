@@ -871,6 +871,27 @@ Migration 008 run by the owner on the server (ended `COMMIT`). Spec: `docs/tasks
 - A fresh offsite backup first (`backup=ok`), then the real run. Journal counts: before 29 events / 19 invoices / 53 side effects / 1 replay / 2 demo sessions / 1 limit alert; after 2 / 1 / 1 / 0 / 1 / 0 (left: the rows seeded as new, under 5 minutes old). Seeded old rows and their invoice, side effect and replay gone; new rows kept; `invoice_number_seq` 17 -> 17; `mailpit messages after reset: 0`; `demo reset finished, heartbeat pinged`.
 - The first real run deleted the M7b sandbox rows on the server (owner approved on 2026-11-13); their evidence is recorded above.
 - Healthchecks `m7-demo-reset` (period 1 day, grace 6 h) green with its last ping at 11:01 (10:01 UTC), the proof's real run (owner report).
+- Migration 009 (owner, 2026-11-13, `COMMIT`): `demo_sessions` now `token_hash, checkout_session_id, demo_email, created_at`.
+
+### Visitor demo built (M7c, 2026-11-13)
+
+Times Berlin (UTC+1), UTC in parentheses.
+
+**Stripe facts that were open ([VERIFY] in the spec), from real calls:** the restricted key with only Checkout Sessions write creates a session with inline `price_data`; `adaptive_pricing[enabled]=false` is accepted; a `success_url` with a `#` fragment works (Stripe returned to `/r#<token>`); the prefilled `customer_email` is shown as a **disabled** field, so a visitor cannot type a real address. The Processor's read-only lookup worked on the `price_data` product.
+
+**Found while building:** the Code node sandbox has no `URLSearchParams` (`ReferenceError`, Demo Checkout answered 500 and the Error Handler ran); the form body is encoded by hand now. Right after an n8n restart `/healthz` answers before the webhooks are registered (404 "not registered" for about 15 s).
+
+**Two visitor runs.** (1) Checkout created through the n8n webhook, paid in a browser with `4242 4242 4242 4242`: webhook received 11:39:56.754 (10:39:56.754 UTC), claimed 0.2 s later (Intake starts the Processor), invoice `INV-2026-000018`, email sent, `done` at 11:39:59.606: **2.9 s from webhook to done**. (2) The whole page flow through an SSH tunnel to `demo-web` (the demo is closed to the public): landing page, button, Stripe, paid, result page: checkout 11:46:30, webhook 11:46:46, done 11:46:48 (`INV-2026-000019`). The result page showed the timeline, the PDF button, the email preview in the sandboxed iframe (rendered under the CSP) and the Telegram preview. Console: no errors except a missing `favicon.ico`.
+- Result API: status 200 with the six steps; preview 200 (subject `Ihre Rechnung INV-2026-000018`, recipient `demo-…@demo.mahmud-alhussen.de`, Telegram text from Render Invoice); PDF 200 `application/pdf`, 31,570 bytes, starts with `%PDF-`; an unknown token 404 `not_found`.
+- **No Telegram for demo payments:** the event's only side effect is `email`.
+
+**Caddy (from inside the compose network):** `/`, `/r`, `/impressum`, `/datenschutz`, `/assets/style.css` 200; the legal pages carry `X-Robots-Tag: noindex, nofollow`; every response has the CSP; `/index.html`, `/assets/../index.html`, GET on the API, `/webhook/demo-result`, `/rest/settings`, `/api/demo/other` get an empty 404; `POST /api/demo/result` reaches n8n.
+
+**Allowlist, from outside (`check-tunnel-allowlist.ps1 -ExpectWaf`):** before the owner's WAF edit `-Demo Closed` 0 failed (48 probes, all WAF) and `-Demo Open` **8 failed, exit 1** (every page and the API path 403): seen failing. After the edit (`m7-invoice-allowlist` with the demo paths, new rule `m7-demo-closed` On): `-Demo Closed` 0 failed, 48 WAF, the Intake control `400 invalid signature`. The other failing case (`-Demo Closed` with the rule off) needs the demo open: it runs at go-live, before anything else.
+
+**e2e (Server): 57/57 passed, 0 failed**, including drift `no differences from live` for `demo-checkout.sdk.ts` and `demo-result.sdk.ts`, their `errorWorkflow`, `saveDataSuccessExecution=none` on the six workflows that see visitor data, and both roles in `check-db-role.ps1`.
+
+**Memory (one reading after e2e):** `free -m` used 1,205 of 3,895 MB = 30.9 % without cache (Oracle's metric; above 22 %). `docker stats`: n8n 412 MiB / 1.5 GiB, gotenberg 217 / 512 MiB, postgres 38 / 512, mailpit 22 / 128, cloudflared 16 / 128, demo-web 11 / 48.
 
 ## Safety guards
 

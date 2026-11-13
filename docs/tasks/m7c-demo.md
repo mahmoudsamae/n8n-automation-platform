@@ -1,6 +1,6 @@
 # M7c: visitor demo (spec)
 
-Status: plan approved by the owner on 2026-11-12. Built PR by PR; each PR updates this status line. M7c-1 (this spec, README portfolio link) merged (PR #24). M7c-2 (migration 008, nightly reset, `check-db-role.ps1` for both roles) built and proven on the server 2026-11-13 (`docs/evidence.md`, "Nightly demo reset"). **Scope cut on 2026-11-13 (below) overrides the sections after it.** Design background: `docs/tasks/m7-server.md`; M7b: `docs/tasks/m7b-stack-tunnel.md`. Every claim marked **[VERIFY]** is checked in the M7c-3 spike and the result recorded here before code relies on it.
+Status: plan approved by the owner on 2026-11-12. Built PR by PR; each PR updates this status line. M7c-1 (this spec, README portfolio link) merged (PR #24). M7c-2 (migration 008, nightly reset, `check-db-role.ps1` for both roles) built and proven on the server 2026-11-13 (`docs/evidence.md`, "Nightly demo reset"). M7c-3 to M7c-5 built 2026-11-13 on the same branch (workflows, demo-web, pages, WAF rules, e2e 57/57; `docs/evidence.md`, "Visitor demo built"). Open: go-live (M7c-6). **Scope cut on 2026-11-13 (below) overrides the sections after it.** Design background: `docs/tasks/m7-server.md`; M7b: `docs/tasks/m7b-stack-tunnel.md`. Every claim marked **[VERIFY]** is checked in the M7c-3 spike and the result recorded here before code relies on it.
 
 ## Goal
 
