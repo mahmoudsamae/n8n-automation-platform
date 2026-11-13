@@ -17,6 +17,19 @@ const everyMinute = trigger({
   output: [{}],
 });
 
+// M7c: Stripe Intake starts a run right after it stored a new pending event (no waiting, its input is ignored), so a demo visitor
+// does not wait for the next minute. Both triggers feed the same two branches; overlapping runs are safe (FOR UPDATE SKIP LOCKED).
+const startedByIntake = trigger({
+  type: 'n8n-nodes-base.executeWorkflowTrigger',
+  version: 1.3,
+  config: {
+    name: 'Started by Intake',
+    parameters: { inputSource: 'passthrough' },
+    position: [200, 560],
+  },
+  output: [{}],
+});
+
 // Configuration: a second branch off the trigger, placed ABOVE the event chain (y 310 < 400) so n8n runs it first; the chain then
 // reads $('Config').first(). The data table node replaces items with table rows, which is why it is not inline.
 // Load Config absorbs its own error (continueRegularOutput) so Config can turn a missing table into a clear config_problem.
@@ -130,6 +143,9 @@ const amount = obj.amount_total;
 // Whether the invoice PDF also goes to Telegram. No default: it must be set on purpose (it passes customer data to a third party).
 const cfg = $('Config').first().json;
 const sendPdfRaw = String(cfg.telegram_send_pdf || '').toLowerCase();
+// M7c: no Telegram at all for a visitor demo payment (owner decision 2026-11-13, option C): its session carries metadata.demo = "true"
+// (set only by the Demo Checkout workflow). Treated as already sent, so every path goes on to Mark Done without a send.
+const isDemo = !!(obj.metadata && obj.metadata.demo === 'true');
 
 let problem = '';
 if (cfg.config_problem) problem = cfg.config_problem;
@@ -165,9 +181,10 @@ return {
     event_id: row.event_id,
     attempts: row.attempts,
     email_done: row.email_done,
-    telegram_done: row.telegram_done,
+    telegram_done: isDemo || row.telegram_done,
     telegram_document_done: row.telegram_document_done,
-    send_pdf: sendPdfRaw === 'true',
+    send_pdf: !isDemo && sendPdfRaw === 'true',
+    is_demo: isDemo,
     problem,
     customer_email: email,
     customer_name: name,
@@ -901,7 +918,11 @@ export default workflow('stripe-processor', 'Stripe Processor')
   .add(everyMinute)
   .to(loadConfig)
   .to(configNode)
+  .add(startedByIntake)
+  .to(loadConfig)
   .add(everyMinute)
+  .to(releaseStuck)
+  .add(startedByIntake)
   .to(releaseStuck)
   .to(claimEvents)
   .to(

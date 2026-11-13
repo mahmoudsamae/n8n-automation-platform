@@ -1,7 +1,8 @@
 import { workflow, node, trigger, ifElse, expr } from '@n8n/workflow-sdk';
 
 // Settings that the SDK file does not express (set via update_workflow): settings.errorWorkflow = c2NT8k3JGpuS3r6I (Stripe Error Handler).
-// Depends on: credential "Stripe webhook secret" (type crypto, field Hmac Secret = the whsec_ of this environment's Stripe endpoint or stripe listen).
+// Depends on: credential "Stripe webhook secret" (type crypto, field Hmac Secret = the whsec_ of this environment's Stripe endpoint or stripe listen),
+// workflow Stripe Processor (id ylR2t9B0ZAH1cLfq, started by id after the 200: update it here if recreated).
 
 const stripeWebhook = trigger({
   type: 'n8n-nodes-base.webhook',
@@ -245,6 +246,47 @@ const respondReceived = node({
   output: [{}],
 });
 
+// M7c: a new pending event starts the Processor right away, AFTER the 200 went out, without waiting for it. So a demo visitor sees the
+// result in seconds instead of up to a minute, and Intake stays fast. Overlapping Processor runs are safe (FOR UPDATE SKIP LOCKED claim),
+// and the 1-minute schedule stays the safety net: a failed start only costs latency, so it is absorbed (continueRegularOutput).
+const isPendingEvent = ifElse({
+  version: 2.4,
+  config: {
+    name: 'Pending Event?',
+    parameters: {
+      conditions: {
+        options: { caseSensitive: true, leftValue: '', typeValidation: 'strict', version: 2 },
+        conditions: [
+          {
+            leftValue: expr("{{ $('Verify Signature and Classify').item.json.status }}"),
+            rightValue: 'pending',
+            operator: { type: 'string', operation: 'equals' },
+          },
+        ],
+        combinator: 'and',
+      },
+    },
+    position: [2220, -40],
+  },
+});
+
+const startProcessor = node({
+  type: 'n8n-nodes-base.executeWorkflow',
+  version: 1.4,
+  config: {
+    name: 'Start Processor',
+    parameters: {
+      source: 'database',
+      workflowId: { __rl: true, mode: 'id', value: 'ylR2t9B0ZAH1cLfq' },
+      mode: 'once',
+      options: { waitForSubWorkflow: false },
+    },
+    onError: 'continueRegularOutput',
+    position: [2440, -120],
+  },
+  output: [{}],
+});
+
 const respondDuplicate = node({
   type: 'n8n-nodes-base.respondToWebhook',
   version: 1.5,
@@ -286,7 +328,7 @@ export default workflow('stripe-intake', 'Stripe Intake')
             isSignatureValid
               .onTrue(
                 insertEvent
-                  .to(isNewEvent.onTrue(respondReceived).onFalse(respondDuplicate))
+                  .to(isNewEvent.onTrue(respondReceived.to(isPendingEvent.onTrue(startProcessor))).onFalse(respondDuplicate))
                   .onError(respondStorageFailed),
               )
               .onFalse(respondInvalid),

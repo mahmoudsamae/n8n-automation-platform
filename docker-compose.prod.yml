@@ -30,11 +30,11 @@ services:
       # and the Swagger UI has its own flag. What keeps /api off the internet is the tunnel allowlist and the WAF rule.
       - N8N_PUBLIC_API_DISABLED=true
       - N8N_PUBLIC_API_SWAGGERUI_DISABLED=true
-      # Execution pruning, explicit (M7b-7; 2.45.6 already prunes by default at 336 h / 10,000). About 1,800 executions a day (Processor
-      # 1,440, outside probe 96, Monitor failures only), so the count limit is reached first: about 2.7 days of history. Enough for triage
-      # (alerts arrive within minutes), and it keeps database.sqlite, the backup and the export processes small.
+      # Execution pruning, explicit (M7b-7; 2.45.6 already prunes by default at 336 h / 10,000). Since M7c the workflows that see visitor
+      # data save no successful executions, and failed ones are kept at most 48 h: the Datenschutz page promises that limit for the visitor
+      # data in error logs. Enough for triage (alerts arrive within minutes); keeps database.sqlite, the backup and the exports small.
       - EXECUTIONS_DATA_PRUNE=true
-      - EXECUTIONS_DATA_MAX_AGE=168
+      - EXECUTIONS_DATA_MAX_AGE=48
       - EXECUTIONS_DATA_PRUNE_MAX_COUNT=5000
     secrets:
       - n8n_encryption_key

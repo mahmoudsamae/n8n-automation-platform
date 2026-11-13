@@ -1,11 +1,12 @@
 {
-  "_comment": "Laptop id (as written in the .sdk.ts files) -> the same object's id on the M7 server n8n. Credentials and data tables get new ids per instance; workflows keep theirs (import:workflow keeps ids). Ids are not secret. Read on 2026-11-11 from the server's n8n SQLite (names and ids only).",
+  "_comment": "Laptop id (as written in the .sdk.ts files) -> the same object's id on the M7 server n8n. Credentials and data tables get new ids per instance; workflows keep theirs (import:workflow keeps ids). Ids are not secret. Read on 2026-11-11 from the server's n8n SQLite (names and ids only). Server-only objects (M7c: credential Stripe demo checkout, created 2026-11-13) map to themselves: the demo workflows exist only on the server, so their .sdk.ts files carry the server id.",
   "credentials": {
     "XVNN7sIThniqsuOf": "7oYIzRh8p66dcAAt",
     "nxXABuEVvevioUzb": "19HGjic8VtI8nqHx",
     "kNsPsjXulOh7i4RQ": "twGPRWDd0UC2R6NI",
     "qtmzPq7nRsOF9MAW": "UndN24HH6B38HHLT",
-    "mvbcLKtDoh7B5WNW": "3OTqo37aAyLYqfrV"
+    "mvbcLKtDoh7B5WNW": "3OTqo37aAyLYqfrV",
+    "kN7IKRSGZFcV7k9O": "kN7IKRSGZFcV7k9O"
   },
   "dataTables": {
     "7NM52PSapza2TNWP": "cBFTq1rsYVEfruFL",
